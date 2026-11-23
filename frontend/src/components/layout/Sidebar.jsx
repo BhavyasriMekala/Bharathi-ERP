@@ -31,7 +31,7 @@ import {
   X,
 } from "lucide-react";
 
-import BrandLogo from "../common/BrandLogo";
+import bharathiLogo from "../../assets/bharathi-logo.png";
 import LogoutConfirmModal from "../common/LogoutConfirmModal";
 import GlobalCreateMenu from "../common/GlobalCreateMenu";
 import { getGlobalCreateActionsForUser } from "../../config/globalCreateActions";
@@ -806,7 +806,9 @@ export default function Sidebar({ collapsed = false, onToggleCollapse, onClose, 
         </button>
       ) : null}
       <div className={`flex min-h-0 flex-1 flex-col ${collapsed ? "overflow-visible" : "overflow-hidden"}`}>
-      <div className={`shrink-0 border-b border-white/10 ${collapsed ? "p-3" : "px-4 py-4 sm:py-5"} flex items-center justify-between`}>
+      <div
+        className={`shrink-0 border-b border-white/10 ${collapsed ? "p-3" : "px-4 py-4 sm:py-5"} flex items-center ${isMobile ? "justify-between gap-2" : "justify-center"}`}
+      >
         <Link
           to={
             storeMode
@@ -819,16 +821,28 @@ export default function Sidebar({ collapsed = false, onToggleCollapse, onClose, 
                     ? QUALITY_CONTROL_DASHBOARD_NAV_PATH
                     : "/"
           }
-          className={`flex items-center ${collapsed ? "justify-center" : "gap-3"} min-w-0`}
+          className={`flex w-full min-w-0 items-center justify-center ${isMobile && !collapsed ? "flex-1" : ""}`}
           onClick={() => onClose?.()}
         >
-          <BrandLogo size="md" />
-          {!collapsed && (
-            <div className="min-w-0">
-              <p className="text-lg font-bold tracking-tight">Insights Iva</p>
-              <p className="text-xs leading-tight text-slate-400">
-                {storeMode ? "Store Manager" : t("nav.tagline")}
-              </p>
+          {collapsed ? (
+            <img
+              src="/icon-192.png"
+              alt="Bharathi Enterprises"
+              width={192}
+              height={192}
+              className="h-8 w-8 object-contain"
+              decoding="async"
+            />
+          ) : (
+            <div className="w-full rounded-lg bg-white px-3 py-2">
+              <img
+                src={bharathiLogo}
+                alt="Bharathi Enterprises"
+                width={640}
+                height={235}
+                className="mx-auto h-12 w-auto max-w-full object-contain"
+                decoding="async"
+              />
             </div>
           )}
         </Link>
