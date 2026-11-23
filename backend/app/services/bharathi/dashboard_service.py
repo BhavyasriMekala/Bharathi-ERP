@@ -8,6 +8,12 @@ from sqlalchemy.orm import Session
 from app.core.permissions import get_role_names, user_is_admin
 from app.models.bharathi import BharathiBillSubmission, BharathiTallySyncRun
 from app.models.user import User
+from app.services.bharathi.supplier_summary_service import (
+    approved_grand_total,
+    invoice_totals_by_status,
+    list_supplier_summaries,
+    pending_approval_count,
+)
 
 
 def role_dashboard(db: Session, user: User) -> dict:
@@ -29,8 +35,14 @@ def role_dashboard(db: Session, user: User) -> dict:
             BharathiTallySyncRun.status == "failed",
         )
     )
+    status_counts = invoice_totals_by_status(db, tenant_id)
     base = {
         "pending_bill_verification": int(pending_verification or 0),
+        "pending_approval_total": pending_approval_count(db, tenant_id),
+        "approved_invoice_count": status_counts.get("APPROVED", 0),
+        "approved_amount_inr": str(approved_grand_total(db, tenant_id)),
+        "invoice_counts_by_status": status_counts,
+        "supplier_count": len(list_supplier_summaries(db, tenant_id, limit=200)),
         "tally_sync_failures": int(tally_failures or 0),
         "client": "bharathi_enterprises",
     }
@@ -54,4 +66,6 @@ def role_dashboard(db: Session, user: User) -> dict:
         base["kpis"] = ["upload_bill", "my_submissions"]
     else:
         base["role_view"] = "other"
+    if user_is_admin(user) or "Accountant" in roles:
+        base["supplier_summaries"] = list_supplier_summaries(db, tenant_id, limit=12)
     return base

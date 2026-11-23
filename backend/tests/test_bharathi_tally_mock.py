@@ -32,3 +32,20 @@ def test_mock_connector_fetch():
     vouchers, cursor = MockTallyConnector().fetch_vouchers(cursor=None)
     assert vouchers
     assert cursor
+
+
+def test_tally_readonly_poc_api(client, register_admin, make_restricted_user):
+    admin = register_admin()
+    tenant_id = admin["user"]["tenant_id"]
+    acct = make_restricted_user(
+        tenant_id,
+        ["dashboard", "bharathi_bills", "bharathi_tally"],
+        role_name="Accountant",
+    )
+    res = client.get("/bharathi/tally/readonly-poc", headers=acct["headers"])
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["live_tally"] is False
+    assert body["writes_disabled"] is True
+    assert body["supplier_ledgers"]
+    assert body["purchase_vouchers"]

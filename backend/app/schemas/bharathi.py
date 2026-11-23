@@ -47,10 +47,25 @@ class BillSubmissionOut(BaseModel):
     latest_extraction: BillExtractionOut | None = None
 
 
+class InvoiceLineItemCorrection(BaseModel):
+    line_number: int | None = None
+    description: str | None = None
+    hsn_sac: str | None = None
+    quantity: float | None = None
+    unit: str | None = None
+    unit_price: float | None = None
+    discount_amount: float | None = None
+    tax_rate: float | None = None
+    taxable_amount: float | None = None
+    tax_amount: float | None = None
+    line_total: float | None = None
+
+
 class BillVerifyRequest(BaseModel):
-    action: str = Field(description="verify | reject | request_correction")
+    action: str = Field(description="verify | reject | request_correction | save_corrections")
     comment: str | None = None
     corrected_fields: dict[str, Any] | None = None
+    corrected_line_items: list[InvoiceLineItemCorrection] | None = None
 
 
 class CollectionFollowUpIn(BaseModel):

@@ -1110,7 +1110,11 @@ export default function AppRoutes() {
       {HR_PLACEHOLDER_PATHS.map((path) => (
         <Route key={path} path={path} element={<ProtectedRoute><P.HRPlaceholders /></ProtectedRoute>} />
       ))}
+      <Route path="/bharathi/dashboard" element={<ProtectedRoute><P.BharathiDashboard /></ProtectedRoute>} />
       <Route path="/bharathi/bills" element={<ProtectedRoute><P.BharathiSupervisorUpload /></ProtectedRoute>} />
+      <Route path="/bharathi/register" element={<ProtectedRoute><P.BharathiPurchaseRegister /></ProtectedRoute>} />
+      <Route path="/bharathi/suppliers" element={<ProtectedRoute><P.BharathiSupplierSummary /></ProtectedRoute>} />
+      <Route path="/bharathi/invoices/:id" element={<ProtectedRoute><P.BharathiInvoiceDetail /></ProtectedRoute>} />
       <Route path="/bharathi/verification" element={<ProtectedRoute><P.BharathiVerificationQueue /></ProtectedRoute>} />
       <Route path="/bharathi/collections" element={<ProtectedRoute><P.BharathiCollections /></ProtectedRoute>} />
       <Route path="/bharathi/tally" element={<ProtectedRoute><P.BharathiTallySync /></ProtectedRoute>} />

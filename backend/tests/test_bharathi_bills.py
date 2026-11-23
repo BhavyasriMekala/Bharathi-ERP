@@ -23,8 +23,10 @@ def test_accountant_has_bill_and_tally_modules():
 
 
 def test_mock_ocr_returns_structured_invoice():
-    data, conf = MockOcrProvider().extract_invoice(filename="a.jpg", mime_type="image/jpeg", hints={})
-    assert data["invoice_total"] > 0
+    data, conf = MockOcrProvider().extract_invoice(
+        filename="a.jpg", mime_type="image/jpeg", file_bytes=b"\xff\xd8\xff", hints={}
+    )
+    assert data["grand_total"] > 0
     assert conf["invoice_number"] >= 0.5
 
 

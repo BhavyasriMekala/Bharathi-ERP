@@ -48,6 +48,8 @@ import {
   isOperator,
   isHRManager,
   isAccountant,
+  isAdmin,
+  isSupervisor,
   isSalesManager,
   isQualityTeam,
   storeManagerPathAllowed,
@@ -74,6 +76,7 @@ import {
 } from "../../config/sidebarNav";
 
 import { ACCOUNTS_DASHBOARD_PATH, SALES_DASHBOARD_PATH } from "../../utils/roleRedirect";
+import { applyBharathiSidebarPolicy } from "../../config/bharathiClient";
 import { STORE_MANAGER_NAV_ITEMS } from "../../config/storeManagerNavConfig";
 import { SALES_MANAGER_NAV_ITEMS } from "../../config/salesManagerNavConfig";
 import { PRODUCTION_MANAGER_NAV_ITEMS } from "../../config/productionManagerNavConfig";
@@ -512,6 +515,15 @@ export default function Sidebar({ collapsed = false, onToggleCollapse, onClose, 
       } else {
         result = raw;
       }
+    }
+
+    if (!storeMode && !salesMode && !productionMode && !qualityMode) {
+      const canSee = (mod) => userCanAccess(user, mod);
+      result = applyBharathiSidebarPolicy(result, user, canSee, {
+        isAdmin,
+        isAccountant,
+        isSupervisor,
+      });
     }
 
     const roleJobCardUrl = getRoleJobCardUrl(user);

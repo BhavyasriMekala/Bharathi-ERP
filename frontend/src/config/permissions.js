@@ -32,6 +32,9 @@ export const MODULES = [
   "sales", "accounts", "quality", "maintenance", "analytics", "alerts", "admin",
   "documents", "documents_ops", "factoryMonitor", "iot", "settings", "meetings", "chat", "hr",
   "reports",
+  "bharathi_bills",
+  "bharathi_tally",
+  "bharathi_collections",
 ];
 
 /** Static fallback matrix — API permissions take precedence when present. */
@@ -68,8 +71,38 @@ export const ROLE_PERMISSIONS = {
   ],
   "HR Manager": ["dashboard", "hr", "analytics", "alerts", "documents", "meetings", "settings"],
   hr_manager: ["dashboard", "hr", "analytics", "alerts", "documents", "meetings", "settings"],
-  Accountant: ["dashboard", "accounts", "sales", "documents", "analytics", "alerts", "masters", "meetings", "settings", "reports"],
-  accountant: ["dashboard", "accounts", "sales", "documents", "analytics", "alerts", "masters", "meetings", "settings", "reports"],
+  Accountant: [
+    "dashboard",
+    "accounts",
+    "sales",
+    "documents",
+    "analytics",
+    "alerts",
+    "masters",
+    "meetings",
+    "settings",
+    "reports",
+    "bharathi_bills",
+    "bharathi_tally",
+    "bharathi_collections",
+  ],
+  accountant: [
+    "dashboard",
+    "accounts",
+    "sales",
+    "documents",
+    "analytics",
+    "alerts",
+    "masters",
+    "meetings",
+    "settings",
+    "reports",
+    "bharathi_bills",
+    "bharathi_tally",
+    "bharathi_collections",
+  ],
+  Supervisor: ["dashboard", "bharathi_bills", "documents", "settings"],
+  supervisor: ["dashboard", "bharathi_bills", "documents", "settings"],
   Operator: [
     "dashboard", "production", "factoryMonitor", "documents", "alerts", "settings",
   ],
@@ -176,6 +209,7 @@ export const ROUTE_MODULES = {
   "/iot": "iot",
   "/hr": "hr",
   "/reports": "reports",
+  "/bharathi": "bharathi_bills",
 };
 
 export function getModuleForPath(pathname) {
@@ -445,6 +479,13 @@ export function userCanWriteProductMaster(user) {
   if (userCanAction(user, "masters", "update")) return true;
   if (userCanAction(user, "sales", "update")) return true;
   return false;
+}
+
+export function isSupervisor(user) {
+  if (!user || isAdmin(user)) return false;
+  if (hasRole(user, "Supervisor") || hasRole(user, "supervisor")) return true;
+  const name = String(user.role_name || user.role || "").toLowerCase();
+  return name === "supervisor";
 }
 
 export function isAccountant(user) {

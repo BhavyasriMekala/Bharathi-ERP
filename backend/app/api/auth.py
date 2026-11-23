@@ -102,6 +102,14 @@ def issue_csrf_token(request: Request, response: Response):
     return {"ok": True, "csrf_token": token}
 
 
+@router.get("/local-demo-login")
+def local_demo_login_status():
+    """Public dev-only hint for login UI (no passwords)."""
+    from app.core.local_demo_login import local_demo_login_public_config
+
+    return local_demo_login_public_config()
+
+
 @router.post("/login", response_model=AuthResponse)
 def login(
     req: LoginRequest,
@@ -112,12 +120,34 @@ def login(
     from app.middleware.security import check_auth_backoff, check_rate_limit, record_auth_failure
 
     try:
+        from app.core.local_demo_login import resolve_login_identity
+
         email = req.email
         check_rate_limit(request, email=email, scope="login")
         check_auth_backoff(request, email=email)
         ip_address = _client_ip(request)
         user_agent = request.headers.get("User-Agent")
-        user = find_user_by_email(db, email)
+
+        identity = resolve_login_identity(db, email, req.password, req.role)
+        login_email = identity.login_email
+        user = identity.user
+        if identity.demo_denied:
+            record_login_attempt(
+                db,
+                email=email,
+                success=False,
+                user_id=None,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                failure_reason=FAILURE_INVALID_CREDENTIALS,
+            )
+            record_auth_failure(request, email=email)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=GENERIC_LOGIN_ERROR,
+            )
+        if user is None:
+            user = find_user_by_email(db, email)
 
         if user and is_account_locked(user):
             from app.services.security_service import get_account_lockout_remaining_seconds
@@ -157,11 +187,11 @@ def login(
                 )
 
         try:
-            authenticated = login_user(db, email, req.password, user=user)
+            authenticated = login_user(db, login_email, req.password, user=user)
         except HTTPException as exc:
             if exc.status_code == status.HTTP_401_UNAUTHORIZED:
                 if user:
-                    register_failed_login(db, user, email)
+                    register_failed_login(db, user, login_email)
                 record_login_attempt(
                     db,
                     email=email,

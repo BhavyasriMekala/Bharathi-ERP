@@ -29,7 +29,7 @@ CLIENT_PROFILE_DEFAULTS: dict[str, Any] = {
     "industry_description": CLIENT_INDUSTRY,
 }
 
-BHARATHI_UI_REGISTERABLE_ROLES = ("Admin", "Accountant", "Supervisor")
+BHARATHI_UI_REGISTERABLE_ROLES = ("Admin", "Accountant", "Supervisor", "Store Manager")
 
 # Sidebar module keys hidden for Bharathi (backend routes remain for shared code).
 BHARATHI_HIDDEN_MODULES = frozenset({
@@ -65,8 +65,13 @@ BILL_SUBMISSION_STATUSES = (
     "DRAFT",
     "SUBMITTED",
     "OCR_PROCESSING",
+    "EXTRACTED",
+    "EXTRACTION_FAILED",
+    "NEEDS_REVIEW",
+    "DUPLICATE_REVIEW",
     "PENDING_VERIFICATION",
     "VERIFIED",
+    "APPROVED",
     "REJECTED",
     "POSTED",
     "SYNC_PENDING",

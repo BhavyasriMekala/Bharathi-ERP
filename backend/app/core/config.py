@@ -15,7 +15,26 @@ _DEFAULT_JWT_SECRET = "change-me-in-production-use-openssl-rand-hex-32"
 
 # .env path relative to backend/
 _env_path = Path(__file__).resolve().parent.parent.parent / ".env"
-load_dotenv(_env_path)
+# Local backend/.env should win over a stale shell DATABASE_URL (e.g. insights_user).
+if _env_path.is_file():
+    _preserve_test_overrides = {
+        k: os.environ[k]
+        for k in (
+            "AUTH_COOKIE_MODE",
+            "DATABASE_URL",
+            "JWT_SECRET_KEY",
+            "ALLOW_SQLITE_RUNTIME",
+            "BHARATHI_OCR_PROVIDER",
+            "STORAGE_PROVIDER",
+            "FILE_STORAGE_LOCAL_PATH",
+            "ALLOW_PUBLIC_REGISTRATION",
+            "ENVIRONMENT",
+        )
+        if k in os.environ
+    }
+    load_dotenv(_env_path, override=True)
+    for _key, _val in _preserve_test_overrides.items():
+        os.environ[_key] = _val
 
 
 def _sqlite_runtime_allowed() -> bool:
@@ -35,6 +54,10 @@ class Settings(BaseSettings):
 
     # Database — PostgreSQL is required at runtime (see ALLOW_SQLITE_RUNTIME for tests/local dev).
     database_url: str = ""
+    database_password: str = Field(
+        default="",
+        validation_alias=AliasChoices("DATABASE_PASSWORD", "database_password"),
+    )
     allow_sqlite_runtime: bool = Field(
         default=False,
         validation_alias=AliasChoices("ALLOW_SQLITE_RUNTIME", "allow_sqlite_runtime"),
@@ -224,6 +247,38 @@ class Settings(BaseSettings):
 
     # Public self-registration (disabled for SaaS — companies created by Super Admin)
     allow_public_registration: bool = False
+
+    # Local Bharathi ERP UI testing only — never enable in production.
+    enable_local_demo_login: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "ENABLE_LOCAL_DEMO_LOGIN",
+            "enable_local_demo_login",
+        ),
+    )
+    local_demo_password: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "LOCAL_DEMO_PASSWORD",
+            "local_demo_password",
+        ),
+    )
+    local_demo_ui_email: str = Field(
+        default="demo@bharathi.local",
+        validation_alias=AliasChoices(
+            "LOCAL_DEMO_UI_EMAIL",
+            "local_demo_ui_email",
+        ),
+    )
+
+    bharathi_ocr_provider: str = Field(
+        default="auto",
+        validation_alias=AliasChoices("BHARATHI_OCR_PROVIDER", "bharathi_ocr_provider"),
+    )
+    bharathi_ocr_model: str = Field(
+        default="",
+        validation_alias=AliasChoices("BHARATHI_OCR_MODEL", "bharathi_ocr_model"),
+    )
 
     # Canonical frontend origin for e-Quotation QR links (no trailing slash).
     frontend_public_base_url: str = Field(
@@ -459,6 +514,16 @@ class Settings(BaseSettings):
         return self.database_url.strip().lower().startswith("postgresql")
 
     @model_validator(mode="after")
+    def apply_database_password_override(self):
+        """Optional DATABASE_PASSWORD in .env (avoids URL-encoding issues)."""
+        from sqlalchemy.engine.url import make_url
+
+        pwd = (self.database_password or "").strip()
+        if pwd and self.is_postgresql:
+            self.database_url = str(make_url(self.database_url).set(password=pwd))
+        return self
+
+    @model_validator(mode="after")
     def enforce_production_secrets(self):
         gid = self.google_client_id.strip()
         gsec = self.google_client_secret.strip()
@@ -481,6 +546,14 @@ class Settings(BaseSettings):
             raise ValueError("AUTH_COOKIE_SECURE must be true when AUTH_COOKIE_SAMESITE is none")
 
         if self.is_production:
+            if self.enable_local_demo_login:
+                raise ValueError(
+                    "ENABLE_LOCAL_DEMO_LOGIN cannot be true in production"
+                )
+            if (self.local_demo_password or "").strip():
+                raise ValueError(
+                    "LOCAL_DEMO_PASSWORD must not be set in production"
+                )
             if self.jwt_secret_key == _DEFAULT_JWT_SECRET:
                 raise ValueError("JWT_SECRET_KEY must be changed from default in production")
             if (self.storage_provider or "").strip().lower() == "local":

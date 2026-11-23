@@ -26,6 +26,7 @@ class BharathiBillSubmission(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_bharathi_bill_submissions_tenant_status", "tenant_id", "status"),
         Index("ix_bharathi_bill_submissions_submitter", "tenant_id", "submitted_by_user_id"),
+        Index("ix_bharathi_bill_business_key", "tenant_id", "supplier_identity_key", "invoice_number_norm"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -35,10 +36,27 @@ class BharathiBillSubmission(Base, TimestampMixin):
     vendor_hint: Mapped[str | None] = mapped_column(String(255))
     remarks: Mapped[str | None] = mapped_column(Text)
     duplicate_of_id: Mapped[int | None] = mapped_column(ForeignKey("bharathi_bill_submissions.id"))
+    duplicate_status: Mapped[str | None] = mapped_column(String(32))
     idempotency_key: Mapped[str | None] = mapped_column(String(64))
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    supplier_name: Mapped[str | None] = mapped_column(String(255))
+    supplier_gstin: Mapped[str | None] = mapped_column(String(20))
+    supplier_identity_key: Mapped[str | None] = mapped_column(String(128))
+    invoice_number: Mapped[str | None] = mapped_column(String(128))
+    invoice_number_norm: Mapped[str | None] = mapped_column(String(128))
+    invoice_date: Mapped[date | None] = mapped_column(Date)
+    due_date: Mapped[date | None] = mapped_column(Date)
+    currency_code: Mapped[str | None] = mapped_column(String(8))
+    grand_total: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    validation_warnings_json: Mapped[str | None] = mapped_column(Text)
+    verified_fields_json: Mapped[str | None] = mapped_column(Text)
     verified_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejected_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    tally_sync_status: Mapped[str | None] = mapped_column(String(32), default="not_configured")
 
 
 class BharathiBillFile(Base, TimestampMixin):
@@ -54,6 +72,51 @@ class BharathiBillFile(Base, TimestampMixin):
     mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(nullable=False, default=0)
     content_sha256: Mapped[str | None] = mapped_column(String(64))
+
+
+class BharathiPurchaseInvoiceLine(Base, TimestampMixin):
+    __tablename__ = "bharathi_purchase_invoice_lines"
+    __table_args__ = (
+        Index("ix_bharathi_inv_lines_submission", "tenant_id", "submission_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    submission_id: Mapped[int] = mapped_column(
+        ForeignKey("bharathi_bill_submissions.id", ondelete="CASCADE"), nullable=False
+    )
+    line_number: Mapped[int] = mapped_column(nullable=False, default=1)
+    description: Mapped[str | None] = mapped_column(String(512))
+    hsn_sac: Mapped[str | None] = mapped_column(String(32))
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    unit: Mapped[str | None] = mapped_column(String(32))
+    unit_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    discount_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    taxable_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    tax_rate: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    tax_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    line_total: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+
+
+class BharathiBillOcrJob(Base, TimestampMixin):
+    __tablename__ = "bharathi_bill_ocr_jobs"
+    __table_args__ = (
+        Index("ix_bharathi_ocr_jobs_submission", "tenant_id", "submission_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    submission_id: Mapped[int] = mapped_column(
+        ForeignKey("bharathi_bill_submissions.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    provider: Mapped[str | None] = mapped_column(String(64))
+    model_name: Mapped[str | None] = mapped_column(String(64))
+    attempts: Mapped[int] = mapped_column(nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(nullable=False, default=3)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class BharathiBillExtraction(Base, TimestampMixin):

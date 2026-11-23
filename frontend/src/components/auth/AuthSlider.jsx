@@ -33,7 +33,7 @@ const SLIDES = [
   {
     image: slide1,
     badge: "Bharathi Enterprises ERP",
-    text: "Business Intelligence • Analytics • AI — production, inventory, and manufacturing insights in one platform.",
+    text: "Accounts, procurement, bill capture, and collections for Bharathi Enterprises in one secure ERP.",
     gradient: "from-teal-500 via-teal-600 to-emerald-700",
     Icon: RobotArmIcon,
   },

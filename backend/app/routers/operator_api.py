@@ -124,10 +124,23 @@ def api_login(
     from app.middleware.security import check_auth_backoff, check_rate_limit, record_auth_failure
 
     try:
+        from app.core.local_demo_login import resolve_login_identity
+        from app.services.security_service import GENERIC_LOGIN_ERROR
+
         email = payload.email
         check_rate_limit(request, email=email, scope="login")
         check_auth_backoff(request, email=email)
-        user = find_user_by_email(db, email)
+        identity = resolve_login_identity(db, email, payload.password, payload.role)
+        login_email = identity.login_email
+        user = identity.user
+        if identity.demo_denied:
+            record_auth_failure(request, email=email)
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content=error_response(GENERIC_LOGIN_ERROR, errors=[GENERIC_LOGIN_ERROR]),
+            )
+        if user is None:
+            user = find_user_by_email(db, email)
         if user and is_account_locked(user):
             from app.services.security_service import get_account_lockout_remaining_seconds
             rem = get_account_lockout_remaining_seconds(user)
@@ -141,7 +154,9 @@ def api_login(
                 headers={"Retry-After": str(rem)},
             )
         try:
-            authenticated = login_user(db, email, payload.password)
+            authenticated = login_user(
+                db, login_email, payload.password, user=user
+            )
         except HTTPException as exc:
             if user:
                 from app.services.security_service import register_failed_login

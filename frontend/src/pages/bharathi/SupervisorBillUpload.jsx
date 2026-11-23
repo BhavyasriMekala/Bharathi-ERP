@@ -50,21 +50,63 @@ export default function SupervisorBillUpload() {
       if (fileRef.current) fileRef.current.value = "";
       await refresh();
     } catch (e) {
-      setMessage(e?.response?.data?.detail || e?.message || "Upload failed.");
+      const detail = e?.response?.data?.detail;
+      const text =
+        typeof detail === "object" && detail?.message
+          ? detail.message
+          : typeof detail === "string"
+            ? detail
+            : e?.message || "Upload failed.";
+      setMessage(text);
     } finally {
       setBusy(false);
       setProgress(0);
     }
   }
 
+  function openFilePicker(useCamera) {
+    if (!fileRef.current) return;
+    if (useCamera) {
+      fileRef.current.setAttribute("capture", "environment");
+    } else {
+      fileRef.current.removeAttribute("capture");
+    }
+    fileRef.current.click();
+  }
+
   return (
-    <StandardPageLayout title="Upload supplier bill" subtitle="Mobile-friendly capture for Supervisors">
+    <StandardPageLayout title="Scan purchase invoice" subtitle="Capture or upload supplier invoices (JPEG, PNG, PDF)">
       <div className="mx-auto flex w-full max-w-xl flex-col gap-4 p-4">
-        <label className="text-sm font-medium">Vendor hint</label>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <button
+            type="button"
+            disabled={busy}
+            className="min-h-12 flex-1 rounded-lg bg-emerald-700 px-4 py-3 text-base font-semibold text-white disabled:opacity-50"
+            onClick={() => openFilePicker(true)}
+          >
+            Scan invoice
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            className="min-h-12 flex-1 rounded-lg border border-slate-300 bg-white px-4 py-3 text-base font-semibold"
+            onClick={() => openFilePicker(false)}
+          >
+            Upload file
+          </button>
+        </div>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp,application/pdf"
+          multiple
+          className="sr-only"
+          aria-hidden
+        />
+        <label className="text-sm font-medium">Vendor hint (optional)</label>
         <input className="rounded border px-3 py-2" value={vendorHint} onChange={(e) => setVendorHint(e.target.value)} />
         <label className="text-sm font-medium">Remarks</label>
         <textarea className="rounded border px-3 py-2" rows={2} value={remarks} onChange={(e) => setRemarks(e.target.value)} />
-        <input ref={fileRef} type="file" accept="image/*,application/pdf" capture="environment" multiple className="text-sm" />
         {progress > 0 && progress < 100 ? <p className="text-xs text-slate-500">Uploading… {progress}%</p> : null}
         <button type="button" disabled={busy} className="rounded border px-4 py-2" onClick={() => refresh()}>
           Refresh list
@@ -75,7 +117,7 @@ export default function SupervisorBillUpload() {
           className="rounded bg-emerald-600 px-4 py-3 text-white disabled:opacity-50"
           onClick={onSubmit}
         >
-          {busy ? "Uploading…" : "Submit bill"}
+          {busy ? "Processing…" : "Submit for OCR"}
         </button>
         {message ? <p className="text-sm text-slate-600">{message}</p> : null}
         <ul className="divide-y rounded border">

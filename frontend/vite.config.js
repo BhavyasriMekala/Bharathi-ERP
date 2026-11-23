@@ -6,8 +6,10 @@ import { authProxyBypass } from "./src/utils/authProxyBypass.js";
 
 const API_PROXY_TARGET = process.env.VITE_API_PROXY_TARGET || "http://127.0.0.1:8000";
 
-const isStaticAsset = (url) =>
-  /\.(png|jpg|jpeg|gif|svg|webp|ico|css|js|woff2?|ttf|eot|json|map)$/i.test(url);
+const isStaticAsset = (url) => {
+  const path = (url || "").split("?")[0];
+  return /\.(png|jpg|jpeg|gif|svg|webp|ico|css|js|woff2?|ttf|eot|json|map)$/i.test(path);
+};
 
 const apiProxyBypass = (req) => {
   if (req.headers.accept?.includes("text/html")) return "/index.html";

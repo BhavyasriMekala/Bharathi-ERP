@@ -3,6 +3,10 @@
  * Admin uses the ERP reference dashboard at `/`; other roles land on their dedicated module home.
  */
 
+import {
+  BHARATHI_CLIENT_MODE,
+  BHARATHI_SUPERVISOR_DASHBOARD_PATH,
+} from "../config/bharathiClient";
 import { isQualityTeam } from "../config/permissions";
 import { prefetchRouteChunk, prefetchRoleSidebarNeighbors } from "./routePrefetch";
 
@@ -74,6 +78,9 @@ export function getDashboardPathForRole(roleOrUser) {
   }
   if (names.some((n) => n === "admin" || n === "administrator")) {
     return "/";
+  }
+  if (names.some((n) => n === "supervisor")) {
+    return BHARATHI_SUPERVISOR_DASHBOARD_PATH;
   }
   if (names.some((n) => n.includes("hr"))) {
     return "/hr";

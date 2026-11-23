@@ -9,7 +9,7 @@ import LoginBackdrop from "../../components/auth/LoginBackdrop";
 import PasswordInput from "../../components/auth/PasswordInput";
 import Button from "../../components/common/Button";
 import LoginSuccessOverlay from "../../components/common/LoginSuccessOverlay";
-import { ROLES } from "../../config/permissions";
+import { BHARATHI_LOGIN_ROLES } from "../../config/bharathiClient";
 import {
   getDashboardPathForRole,
   prefetchDashboardForRole,
@@ -17,7 +17,7 @@ import {
 } from "../../utils/roleRedirect";
 
 const LOGIN_SUCCESS_MS = 0;
-const LOGIN_ROLES = ROLES.map((r) => r.name);
+const LOGIN_ROLES = BHARATHI_LOGIN_ROLES;
 
 const EnvelopeIcon = () => (
   <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -66,6 +66,22 @@ export default function Login() {
   const redirectTimerRef = useRef(null);
   const lockoutTimerRef = useRef(null);
   const submittingRef = useRef(false);
+  const [localDemoEmail, setLocalDemoEmail] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/auth/local-demo-login")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.enabled && data.demo_email) {
+          setLocalDemoEmail(String(data.demo_email));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const prevTitle = document.title;
@@ -236,7 +252,7 @@ export default function Login() {
                   </div>
                   <input
                     type="email"
-                    placeholder="Company Email"
+                    placeholder={localDemoEmail || "Company Email"}
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     autoComplete="username"

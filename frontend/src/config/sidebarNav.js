@@ -27,34 +27,6 @@ import { HR_SIDEBAR_ITEMS } from "./hrSidebarNav";
  */
 export const SIDEBAR_NAV = [
   {
-    key: "bharathi_bills",
-    label: "Bill Capture",
-    to: "/bharathi/bills",
-    icon: FolderOpen,
-    module: "bharathi_bills",
-  },
-  {
-    key: "bharathi_verify",
-    label: "Bill Verification",
-    to: "/bharathi/verification",
-    icon: CheckCircle2,
-    module: "bharathi_bills",
-  },
-  {
-    key: "bharathi_collections",
-    label: "Collections",
-    to: "/bharathi/collections",
-    icon: Wallet,
-    module: "bharathi_collections",
-  },
-  {
-    key: "bharathi_tally",
-    label: "Tally Sync",
-    to: "/bharathi/tally",
-    icon: Landmark,
-    module: "bharathi_tally",
-  },
-  {
     key: "dashboard",
     labelKey: "erpNav.dashboard",
     to: "/",

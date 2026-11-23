@@ -23,10 +23,11 @@ else:
 os.environ["JWT_SECRET_KEY"] = "test-secret-key-not-for-production"
 os.environ["ENVIRONMENT"] = "development"
 # Default dual mode so existing tests can read Bearer tokens from login JSON.
-os.environ["AUTH_COOKIE_MODE"] = os.environ.get("AUTH_COOKIE_MODE", "dual")
+os.environ["AUTH_COOKIE_MODE"] = "dual"
 # Allow /auth/register in tests (disabled in SaaS production).
 os.environ["ALLOW_PUBLIC_REGISTRATION"] = "true"
 os.environ["STORAGE_PROVIDER"] = "local"
+os.environ.setdefault("BHARATHI_OCR_PROVIDER", "mock")
 if _TEST_DB_PATH:
     os.environ["FILE_STORAGE_LOCAL_PATH"] = _TEST_DB_PATH + "_uploads"
 else:

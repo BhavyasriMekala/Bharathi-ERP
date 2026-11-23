@@ -1,17 +1,25 @@
 """Bill upload workflow with stored file integration."""
 
+from pathlib import Path
+
+from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.file_storage import StoredFile
 
 
 def _uploaded_file(db, tenant_id: int, user_id: int) -> int:
+    key = f"bharathi/test/{user_id}/bill-test.pdf"
+    root = Path(get_settings().file_storage_local_path).resolve()
+    path = (root / key).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"%PDF-1.4\n% mock invoice bytes for OCR tests\n")
     row = StoredFile(
         tenant_id=tenant_id,
         uploaded_by_user_id=user_id,
         original_filename="bill-test.pdf",
         storage_provider="local",
         storage_bucket="local",
-        storage_key=f"bharathi/test/{user_id}/bill-test.pdf",
+        storage_key=key,
         mime_type="application/pdf",
         file_size=1024,
         checksum_sha256="abc123test",
