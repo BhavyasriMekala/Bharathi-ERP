@@ -39,7 +39,7 @@ function fireNotification(title, body, meetUrl) {
   try {
     const n = new Notification(title, {
       body,
-      icon: "/favicon.ico",
+      icon: "/favicon.ico?v=2",
       tag: title, // deduplicates same-title notifications
     });
     if (meetUrl) {
