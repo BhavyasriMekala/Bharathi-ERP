@@ -336,9 +336,9 @@ describe("getDashboardPathForRole", () => {
     expect(getDashboardPathForRole("Quality Control")).toBe("/dashboard");
   });
 
-  it("routes GNS Super Admin to /gns-admin", async () => {
+  it("routes GNS Super Admin to the main dashboard", async () => {
     const { getDashboardPathForRole } = await import("../utils/roleRedirect");
-    expect(getDashboardPathForRole("Super Admin")).toBe("/gns-admin");
-    expect(getDashboardPathForRole("GNS Super Admin")).toBe("/gns-admin");
+    expect(getDashboardPathForRole("Super Admin")).toBe("/");
+    expect(getDashboardPathForRole("GNS Super Admin")).toBe("/");
   });
 });

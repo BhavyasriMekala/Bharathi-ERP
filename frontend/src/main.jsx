@@ -39,7 +39,6 @@ function SessionGate({ children }) {
     if (
       sessionExpired &&
       (location.pathname === "/login" ||
-        location.pathname.startsWith("/gns-admin") ||
         location.pathname.startsWith("/register") ||
         location.pathname === "/landing")
     ) {
@@ -50,7 +49,6 @@ function SessionGate({ children }) {
   const showModal =
     Boolean(sessionExpired) &&
     location.pathname !== "/login" &&
-    !location.pathname.startsWith("/gns-admin") &&
     !location.pathname.startsWith("/register") &&
     location.pathname !== "/landing";
 

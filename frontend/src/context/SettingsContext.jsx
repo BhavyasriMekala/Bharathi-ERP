@@ -54,8 +54,6 @@ export function SettingsProvider({ children }) {
     const isLogin =
       typeof window !== "undefined" &&
       (window.location.pathname === "/login" ||
-        window.location.pathname === "/gns-admin/login" ||
-        window.location.pathname === "/super-admin/login" ||
         window.location.pathname === "/forgot-password" ||
         window.location.pathname === "/reset-password" ||
         window.location.pathname === "/verify-email" ||

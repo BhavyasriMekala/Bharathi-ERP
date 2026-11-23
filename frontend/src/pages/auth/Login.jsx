@@ -270,15 +270,9 @@ export default function Login() {
                   required
                 />
 
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs">
+                <div className="flex flex-wrap items-center justify-end gap-2 pt-1 text-xs">
                   <Link to="/forgot-password" className="text-gray-600 hover:text-teal-600 transition-colors py-1">
                     Forgot Your Password?
-                  </Link>
-                  <Link
-                    to="/gns-admin/login"
-                    className="font-semibold text-teal-600 hover:text-teal-700 hover:underline transition-colors py-1"
-                  >
-                    Super Admin
                   </Link>
                 </div>
 

@@ -70,7 +70,7 @@ export function getDashboardPathForRole(roleOrUser) {
   const name = names[0] || "";
 
   if (names.some((n) => n.includes("super admin") || n === "gns super admin")) {
-    return "/gns-admin";
+    return "/";
   }
   if (names.some((n) => n === "admin" || n === "administrator")) {
     return "/";

@@ -15,7 +15,6 @@ export default function SessionExpiredModal({ open, onLogin }) {
 
   const isAuthPage =
     location.pathname === "/login" ||
-    location.pathname.startsWith("/gns-admin") ||
     location.pathname.startsWith("/register") ||
     location.pathname === "/landing";
 

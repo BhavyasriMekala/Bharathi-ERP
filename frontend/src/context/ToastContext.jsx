@@ -171,8 +171,7 @@ export function ToastProvider({ children }) {
           window.location.pathname.startsWith("/register") ||
           window.location.pathname.startsWith("/landing") ||
           window.location.pathname.startsWith("/forgot-password") ||
-          window.location.pathname.startsWith("/reset-password") ||
-          window.location.pathname.startsWith("/gns-admin"))
+          window.location.pathname.startsWith("/reset-password"))
       ) {
         return;
       }

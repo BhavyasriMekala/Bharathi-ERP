@@ -199,7 +199,6 @@ export function AuthProvider({ children }) {
       const isAuthPage =
         typeof window !== "undefined" &&
         (window.location.pathname.startsWith("/login") ||
-          window.location.pathname.startsWith("/gns-admin") ||
           window.location.pathname.startsWith("/register") ||
           window.location.pathname === "/landing");
       if (!isAuthPage) {

@@ -34,7 +34,6 @@ export function isErpAiEligibleRoute(pathname) {
   ) {
     return false;
   }
-  if (path.startsWith("/gns-admin")) return false;
   if (path === "/settings" || path.startsWith("/settings/")) return false;
   return true;
 }

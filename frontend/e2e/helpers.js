@@ -10,10 +10,5 @@ export async function openCompanyLogin(page) {
   });
 
   const roleSelect = page.locator('select[aria-label="Role"]');
-  if ((await roleSelect.count()) === 0) {
-    await page.goto("/gns-admin/login");
-    await page.getByRole("link", { name: /Sign in here/i }).click();
-    await page.waitForURL(/\/login\/?(\?.*)?$/);
-  }
   await expect(roleSelect).toBeVisible({ timeout: 15_000 });
 }

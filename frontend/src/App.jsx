@@ -40,7 +40,6 @@ function isShellLessRoute(pathname) {
   ) {
     return true;
   }
-  if (path.startsWith("/gns-admin")) return true;
   return false;
 }
 
@@ -163,8 +162,6 @@ export default function App() {
     const isLogin =
       path === "/login" ||
       path === "/signin" ||
-      path === "/gns-admin/login" ||
-      path === "/super-admin/login" ||
       path === "/forgot-password" ||
       path === "/reset-password" ||
       path === "/verify-email" ||
@@ -295,19 +292,16 @@ export default function App() {
 
   if (isShellLessRoute(location.pathname)) {
     const path = normalizePath(location.pathname);
-    const isAdminShell = path.startsWith("/gns-admin");
     const isAuthShell =
       path === "/login" ||
       path === "/register" ||
       path === "/landing" ||
       path === "/forgot-password" ||
       path === "/reset-password" ||
-      path === "/verify-email" ||
-      path === "/gns-admin/login" ||
-      path === "/gns-admin/verify-otp";
-    const showRefresh = !isAuthShell && (isAdminShell || path === "/settings" || path.startsWith("/settings/"));
+      path === "/verify-email";
+    const showRefresh = !isAuthShell && (path === "/settings" || path.startsWith("/settings/"));
     return (
-      <div className={`min-h-screen ${isAdminShell ? "" : "bg-[var(--color-bg)]"}`}>
+      <div className="min-h-screen bg-[var(--color-bg)]">
         <NavigationProgressBar />
         <NavigationLoadingOverlay />
         <div data-page-refresh-root>

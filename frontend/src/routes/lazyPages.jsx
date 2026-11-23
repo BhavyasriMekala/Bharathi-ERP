@@ -2,11 +2,6 @@ import { createElement, lazy } from "react";
 
 export const Landing = lazy(() => import("../pages/Landing"));
 export const Login = lazy(() => import("../pages/auth/Login"));
-export const SuperAdminLogin = lazy(() => import("../pages/platform/SuperAdminLogin"));
-export const SuperAdminVerifyOtp = lazy(() => import("../pages/platform/SuperAdminVerifyOtp"));
-export const SuperAdminDashboard = lazy(() => import("../pages/platform/SuperAdminDashboard"));
-export const CreateCompany = lazy(() => import("../pages/platform/CreateCompany"));
-export const CompanyDetail = lazy(() => import("../pages/platform/CompanyDetail"));
 export const ForgotPassword = lazy(() => import("../pages/auth/ForgotPassword"));
 export const ResetPassword = lazy(() => import("../pages/auth/ResetPassword"));
 export const VerifyEmail = lazy(() => import("../pages/auth/VerifyEmail"));
