@@ -1,0 +1,86 @@
+import { useEffect, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
+import { PAGE_REFRESH_EVENT } from "../../utils/pageRefresh";
+
+/**
+ * Centered branded loading overlay with semi-transparent dark backdrop.
+ * Displays on page navigation or page refresh for ~0.1s so users
+ * see a brief branded flash before the new page renders.
+ */
+import BrandLoadingScreen from "./BrandLoadingScreen";
+
+export default function NavigationLoadingOverlay() {
+  const location = useLocation();
+  const [visible, setVisible] = useState(false);
+  const [fadingOut, setFadingOut] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const isInitialMount = useRef(true);
+  const timerRef = useRef(null);
+  const fadeTimerRef = useRef(null);
+  const prevPathRef = useRef(location.pathname + location.search);
+
+  const triggerLoader = (refreshMode = false) => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current);
+
+    setIsRefreshing(refreshMode);
+    setFadingOut(false);
+    setVisible(true);
+
+    // Keep visible for exactly 0.1 seconds (20ms visible + 80ms quick fade)
+    timerRef.current = setTimeout(() => {
+      setFadingOut(true);
+      fadeTimerRef.current = setTimeout(() => {
+        setVisible(false);
+        setFadingOut(false);
+        setIsRefreshing(false);
+      }, 80);
+    }, 20);
+  };
+
+  // Standard route changes are handled smoothly by NavigationProgressBar + RouteFallback
+  // without blocking the user with an intrusive full-screen overlay.
+  useEffect(() => {
+    prevPathRef.current = location.pathname + location.search;
+  }, [location.pathname, location.search]);
+
+  // Trigger on manual / global page refresh events
+  useEffect(() => {
+    const onRefresh = () => {
+      triggerLoader(true);
+    };
+
+    window.addEventListener(PAGE_REFRESH_EVENT, onRefresh);
+    return () => {
+      window.removeEventListener(PAGE_REFRESH_EVENT, onRefresh);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current);
+    };
+  }, []);
+
+  // Trigger on any button or KPI card click across the entire application
+  useEffect(() => {
+    const handleGlobalClick = (event) => {
+      const target = event.target;
+      if (!target || typeof target.closest !== "function") return;
+
+      const clickable = target.closest(
+        "button, [role='button'], .cursor-pointer, input[type='button'], input[type='submit']"
+      );
+      if (!clickable) return;
+      // Print / download / modal actions must not flash the full-screen loader (breaks window.print).
+      if (clickable.closest("[data-skip-nav-loader]")) return;
+      if (clickable.getAttribute("data-action") === "print") return;
+      triggerLoader(true);
+    };
+
+    window.addEventListener("click", handleGlobalClick, { capture: true });
+    return () => {
+      window.removeEventListener("click", handleGlobalClick, { capture: true });
+    };
+  }, []);
+
+  if (!visible) return null;
+
+  return <BrandLoadingScreen isFadingOut={fadingOut} />;
+}

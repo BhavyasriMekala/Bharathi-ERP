@@ -1,0 +1,45 @@
+"""Validate business entities belong to the same tenant before attaching files."""
+
+from __future__ import annotations
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.models.sales import Customer, Lead, SalesOrder
+from app.models.hr import Employee, LeaveRequest
+from app.models.document import Document
+from app.models.accounts import Expense
+from app.models.inventory import InventoryItem, StockAdjustment, Supplier, Warehouse
+from app.models.procurement import MaterialRequest, PurchaseOrder
+from app.models.production import ProductionOrder
+
+
+ENTITY_MODELS = {
+    "customer": Customer,
+    "sales_order": SalesOrder,
+    "employee": Employee,
+    "document": Document,
+    "inventory_item": InventoryItem,
+    "warehouse": Warehouse,
+    "purchase_order": PurchaseOrder,
+    "material_request": MaterialRequest,
+    "supplier": Supplier,
+    "vendor": Supplier,
+    "leave_request": LeaveRequest,
+    "production_order": ProductionOrder,
+    "stock_adjustment": StockAdjustment,
+    "inventory_adjustment": StockAdjustment,
+    "expense": Expense,
+    "lead": Lead,
+}
+
+
+def validate_entity_access(db: Session, tenant_id: int, entity_type: str, entity_id: int) -> bool:
+    model = ENTITY_MODELS.get((entity_type or "").lower().replace("-", "_"))
+    if not model:
+        return False
+    row = db.get(model, entity_id)
+    if not row:
+        return False
+    row_tenant = getattr(row, "tenant_id", None)
+    return row_tenant == tenant_id

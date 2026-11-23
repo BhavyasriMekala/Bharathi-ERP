@@ -1,0 +1,440 @@
+import { translateBackendPhoneMessage } from "./indianPhoneValidation";
+
+/** Normalize FastAPI / Axios error payloads for toast and form display. */
+export function formatApiError(detail, fallback = "Something went wrong.") {
+  if (detail == null || detail === "") return fallback;
+  if (typeof detail === "string") {
+    if (
+      detail.toLowerCase().includes("value error") ||
+      detail.toLowerCase().includes("validation error") ||
+      detail.toLowerCase().includes("validation failed") ||
+      detail.toLowerCase().includes("invalid input")
+    ) {
+      return "Enter valid inputs";
+    }
+    return detail;
+  }
+  if (Array.isArray(detail)) {
+    return "Enter valid inputs";
+  }
+  if (typeof detail === "object") {
+    const msg = detail.msg || detail.message || detail.detail;
+    if (typeof msg === "string") {
+      if (
+        msg.toLowerCase().includes("value error") ||
+        msg.toLowerCase().includes("validation error") ||
+        msg.toLowerCase().includes("validation failed") ||
+        msg.toLowerCase().includes("invalid input")
+      ) {
+        return "Enter valid inputs";
+      }
+      return msg;
+    }
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
+/** Read error payload from FastAPI detail or standard API envelope. */
+export function extractApiErrorDetail(err) {
+  const data = err?.response?.data;
+  if (!data) return null;
+  if (data.detail != null && data.detail !== "") return data.detail;
+  if (data.data && typeof data.data === "object") {
+    const nested = data.data;
+    if (nested.message || nested.code || nested.blockers) return nested;
+  }
+  if (data.message && data.message !== "Validation failed" && data.message !== "Enter valid inputs") return data.message;
+  if (Array.isArray(data.errors) && data.errors.length) {
+    if (data.errors.length === 1 && typeof data.errors[0] === "string") {
+      return data.errors[0];
+    }
+    return data.errors;
+  }
+  if (data.message) return data.message;
+  return null;
+}
+
+export function apiErrorMessage(err, fallback = "Something went wrong.") {
+  const status = err?.response?.status;
+  if (status === 422) {
+    return "Enter valid inputs";
+  }
+  const detail = extractApiErrorDetail(err);
+  if (detail != null && detail !== "") {
+    return formatApiError(detail, fallback);
+  }
+  if (status) {
+    return httpStatusMessage(err, fallback);
+  }
+  if (isNetworkError(err)) {
+    return httpStatusMessage(err, fallback);
+  }
+  const msg = err?.message || "";
+  if (/^Request failed with status code \d+$/i.test(msg)) {
+    return fallback;
+  }
+  if (msg.includes("Unable to connect to server")) {
+    return fallback;
+  }
+  return msg || fallback;
+}
+
+/** User-friendly message for common HTTP status codes. */
+export function httpStatusMessage(err, fallback = "Something went wrong.") {
+  const status = err?.response?.status;
+  if (status === 422) {
+    return "Enter valid inputs";
+  }
+  const detail = extractApiErrorDetail(err);
+  if (detail != null && detail !== "") {
+    return formatApiError(detail, fallback);
+  }
+  if (status === 401) {
+    return "Your session has expired. Please log in again.";
+  }
+  if (status === 403) {
+    return "You don't have permission to perform this action.";
+  }
+  if (status === 404) {
+    return "Requested record was not found.";
+  }
+  if (status === 409) {
+    return "This action conflicts with the current state. Please refresh and try again.";
+  }
+  if (status === 422) {
+    return "Please check your input and try again.";
+  }
+  if (status === 429) {
+    const retryAfter = err?.response?.headers?.["retry-after"];
+    const seconds = retryAfter ? parseInt(String(retryAfter), 10) : NaN;
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return `Too many requests. Please wait ${seconds} second${seconds === 1 ? "" : "s"} and try again.`;
+    }
+    return "Too many requests. Please wait a moment and try again.";
+  }
+  if (status && status >= 500) {
+    return "Something went wrong. Please try again.";
+  }
+  if (err?.code === "ERR_NETWORK") {
+    return "Unable to connect. Please check your internet connection.";
+  }
+  if (err?.code === "ECONNABORTED") {
+    return "The request timed out. Please try again.";
+  }
+  return err?.message || fallback;
+}
+
+const EMAIL_SERVICE_LEAK_PATTERN =
+  /backend\/\.env|set\s+SMTP_|missing_settings=/i;
+
+const REPORT_EMAIL_CODE_MESSAGES = {
+  smtp_not_configured:
+    "Email service is not configured. Please contact your administrator.",
+  smtp_auth_failed: "Email service is temporarily unavailable. Please try again later.",
+  smtp_connection_failed: "Email service is temporarily unavailable. Please try again later.",
+  smtp_send_failed: "Email service is temporarily unavailable. Please try again later.",
+};
+
+function reportEmailDetailMessage(detail, fallback) {
+  if (detail == null || detail === "") return null;
+  if (typeof detail === "string" && detail.trim().startsWith("{") && detail.trim().endsWith("}")) {
+    try {
+      const parsed = JSON.parse(detail.replace(/'/g, '"'));
+      if (parsed && typeof parsed === "object") {
+        detail = parsed;
+      }
+    } catch {}
+  }
+  if (typeof detail === "object" && !Array.isArray(detail)) {
+    const code = detail.code;
+    if (code && REPORT_EMAIL_CODE_MESSAGES[code]) {
+      return REPORT_EMAIL_CODE_MESSAGES[code];
+    }
+    const message = detail.message || detail.detail;
+    if (
+      typeof message === "string" &&
+      message.trim() &&
+      message !== "Email service is temporarily unavailable. Please try again later." &&
+      message !== "Enter valid inputs" &&
+      message !== "Validation failed"
+    ) {
+      if (!EMAIL_SERVICE_LEAK_PATTERN.test(message)) {
+        return message;
+      }
+      return REPORT_EMAIL_CODE_MESSAGES.smtp_not_configured;
+    }
+    if (typeof message === "string" && message.trim()) {
+      return message;
+    }
+  }
+  if (Array.isArray(detail) && detail.length) {
+    detail = detail[0];
+  }
+  if (typeof detail === "string") {
+    const lower = detail.toLowerCase();
+    if (lower.includes("rows are required") || lower.includes("rows or purchase_order_id")) {
+      return "No report data available to send.";
+    }
+    if (lower.includes("to_email") || lower.includes("recipient email") || lower.includes("not a valid email") || lower.includes("value is not a valid email")) {
+      return "Please enter a valid recipient email address.";
+    }
+    if (lower.includes("cc: value error") || lower.includes("invalid cc")) {
+      return "Please enter a valid Cc email address.";
+    }
+    if (!EMAIL_SERVICE_LEAK_PATTERN.test(detail) && detail !== "Enter valid inputs" && detail !== "Validation failed") {
+      return detail;
+    }
+  }
+  const text = formatApiError(detail, fallback);
+  if (!text) return null;
+  if (EMAIL_SERVICE_LEAK_PATTERN.test(text)) {
+    return REPORT_EMAIL_CODE_MESSAGES.smtp_not_configured;
+  }
+  return text;
+}
+
+/** User-facing errors for dashboard/ledger report email (PDF). */
+export function reportEmailErrorMessage(err, fallback = "Unable to send the report. Please try again.") {
+  const status = err?.response?.status;
+  const data = err?.response?.data;
+  const validationErrors = Array.isArray(data?.errors) ? data.errors : [];
+  const detail = status === 422 && validationErrors.length
+    ? validationErrors[0]
+    : extractApiErrorDetail(err);
+  if (status === 404) {
+    return "Report email service is currently unavailable.";
+  }
+  if (status === 403) {
+    return "You don't have permission to email this report.";
+  }
+  if (status === 422) {
+    if (validationErrors.length) {
+      const first = String(validationErrors[0]);
+      if (first.toLowerCase().includes("to_email") || first.toLowerCase().includes("recipient") || first.toLowerCase().includes("email")) {
+        return "Please enter a valid recipient email address.";
+      }
+      if (first.toLowerCase().includes("cc")) {
+        return "Please enter a valid Cc email address.";
+      }
+    }
+    const mapped = reportEmailDetailMessage(detail, "Please check the recipient email address.");
+    return (mapped && mapped !== "Enter valid inputs") ? mapped : "Please check the recipient email address and try again.";
+  }
+  if (status === 503) {
+    return (
+      reportEmailDetailMessage(detail, fallback)
+      || "Email service is temporarily unavailable. Please try again later."
+    );
+  }
+  if (detail != null && detail !== "") {
+    const mapped = reportEmailDetailMessage(detail, fallback);
+    if (mapped) return mapped;
+  }
+  if (status && status >= 500) {
+    return "Unable to send the report right now. Please try again.";
+  }
+  if (err?.code === "ERR_NETWORK" || err?.code === "ECONNABORTED") {
+    return httpStatusMessage(err, fallback);
+  }
+  if (err?.message && !/^Request failed with status code \d+$/i.test(err.message)) {
+    return err.message;
+  }
+  return fallback;
+}
+
+export function asArray(data) {
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === "object") {
+    if (Array.isArray(data.items)) return data.items;
+    if (Array.isArray(data.results)) return data.results;
+    if (Array.isArray(data.data)) return data.data;
+  }
+  return [];
+}
+
+/** True when the request failed due to connectivity (not a server response). */
+export function isNetworkError(err) {
+  if (!err) return false;
+  if (err?.response) return false;
+  // If browser reports it is offline, it is definitely a network error
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    return true;
+  }
+  const code = String(err?.code || "");
+  const message = String(err?.message || "");
+  return (
+    code === "ERR_NETWORK" ||
+    message.includes("Network Error") ||
+    message.includes("ERR_CONNECTION_RESET") ||
+    message.includes("ECONNRESET")
+  );
+}
+
+export function isPermissionError(err) {
+  return err?.response?.status === 403;
+}
+
+export function isAuthError(err) {
+  return err?.response?.status === 401;
+}
+
+export function isConflictError(err) {
+  return err?.response?.status === 409;
+}
+
+/** User-facing copy for 409 responses with optional server detail. */
+export function conflictErrorMessage(err, fallback) {
+  const detail = extractApiErrorDetail(err);
+  if (detail != null && detail !== "") {
+    return formatApiError(
+      detail,
+      fallback || "Someone else updated this record. Please refresh and try again.",
+    );
+  }
+  return (
+    fallback ||
+    "Someone else updated this record. Your screen may contain older information."
+  );
+}
+
+export function isValidationError(err) {
+  const status = err?.response?.status;
+  return status === 400 || status === 422;
+}
+
+/** Map FastAPI validation array to { fieldName: message }. */
+export function mapValidationErrorsToFields(err) {
+  const detail = extractApiErrorDetail(err);
+  const fields = {};
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    Object.entries(detail).forEach(([key, value]) => {
+      if (typeof value === "string" && value.trim()) fields[key] = value.trim();
+    });
+    if (Object.keys(fields).length) return fields;
+  }
+  if (!Array.isArray(detail)) return fields;
+  detail.forEach((item) => {
+    const loc = Array.isArray(item?.loc)
+      ? item.loc.filter((p) => p !== "body" && p !== "query" && p !== "path")
+      : [];
+    const key = loc.length ? loc[loc.length - 1] : "form";
+    let msg = item?.msg || item?.message || "Invalid value";
+    msg = String(msg).replace(/^Value error,\s*/i, "").trim();
+    if (!fields[key]) fields[key] = msg;
+  });
+  return fields;
+}
+
+/** Machine-readable backend error code from envelope or FastAPI detail. */
+export function extractApiErrorCode(err) {
+  const data = err?.response?.data;
+  if (!data || typeof data !== "object") return null;
+  if (typeof data.code === "string" && data.code) return data.code;
+  if (data.data && typeof data.data === "object" && typeof data.data.code === "string") {
+    return data.data.code;
+  }
+  if (data.detail && typeof data.detail === "object" && typeof data.detail.code === "string") {
+    return data.detail.code;
+  }
+  return null;
+}
+
+const CSRF_ERROR_CODES = new Set([
+  "CSRF_ORIGIN_MISMATCH",
+  "CSRF_CLIENT_HEADER_MISSING",
+  "CSRF_TOKEN_MISMATCH",
+  "CSRF_TOKEN_MISSING",
+]);
+
+/**
+ * Classify an API error for UI state routing.
+ * Types: session | permission | csrf | conflict | validation | network | server | not_found | unknown
+ */
+export function classifyApiError(err, fallback = "Something went wrong.") {
+  const message = httpStatusMessage(err, fallback);
+  const status = err?.response?.status;
+  const code = extractApiErrorCode(err);
+
+  if (status === 401) return { type: "session", message, fields: {}, code };
+  if (status === 403) {
+    if (code && CSRF_ERROR_CODES.has(code)) {
+      return {
+        type: "csrf",
+        message:
+          "Security check failed. Please refresh the page and sign in again.",
+        fields: {},
+        code,
+      };
+    }
+    return {
+      type: "permission",
+      message:
+        typeof message === "string" && message
+          ? message
+          : "You do not have permission to access this module.",
+      fields: {},
+      code: code || "PERMISSION_DENIED",
+    };
+  }
+  if (status === 409) return { type: "conflict", message, fields: {} };
+  if (status === 400 || status === 422) {
+    return {
+      type: "validation",
+      message,
+      fields: mapValidationErrorsToFields(err),
+    };
+  }
+  if (status === 404) return { type: "not_found", message, fields: {} };
+  if (status === 429) return { type: "rate_limit", message, fields: {} };
+  const isActuallyOffline = typeof navigator !== "undefined" && !navigator.onLine;
+  if (isActuallyOffline) {
+    return {
+      type: "network",
+      message: "Please check your internet connection and try again.",
+      fields: {},
+    };
+  }
+  if (isNetworkError(err)) {
+    return {
+      type: "server",
+      message: "Unable to connect to server. Please try again.",
+      fields: {},
+    };
+  }
+  if (err?.code === "ECONNABORTED" || String(err?.message || "").includes("timeout")) {
+    return {
+      type: "server",
+      message: "Server response timed out. Please try again.",
+      fields: {},
+    };
+  }
+  if (status && status >= 500) {
+    return { type: "server", message: "Unable to load the data. Please try again.", fields: {} };
+  }
+  return { type: "unknown", message, fields: {} };
+}
+
+const PHONE_FIELD_KEYS = new Set(["phone", "mobile", "work_phone", "alternate_phone", "manager_mobile"]);
+
+/** Merge backend field errors into an existing client-side errors object. */
+export function applyBackendFieldErrors(err, setFieldErrors, fieldMap = {}, options = {}) {
+  const { t } = options;
+  const { fields } = classifyApiError(err);
+  if (!fields || !Object.keys(fields).length) return false;
+  const mapped = {};
+  Object.entries(fields).forEach(([key, msg]) => {
+    const target = fieldMap[key] || key;
+    let text = msg;
+    if (t && PHONE_FIELD_KEYS.has(String(target))) {
+      text = translateBackendPhoneMessage(msg, t);
+    }
+    mapped[target] = text;
+  });
+  setFieldErrors((prev) => ({ ...prev, ...mapped }));
+  return true;
+}

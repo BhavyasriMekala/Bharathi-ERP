@@ -1,0 +1,125 @@
+import { defineConfig, devices } from "@playwright/test";
+
+const baseURL = process.env.E2E_BASE_URL || "http://127.0.0.1:5173";
+const responsiveRoleProjects = [
+  ["operator", "operator.json"],
+  ["quality", "quality.json"],
+  ["store", "store.json"],
+  ["production", "production.json"],
+  ["sales", "sales.json"],
+  ["hr", "hr.json"],
+  ["admin", "admin.json"],
+].map(([role, storageState]) => ({
+  name: `responsive-${role}`,
+  timeout: 900_000,
+  use: {
+    ...devices["Desktop Chrome"],
+    baseURL: "http://127.0.0.1:5173",
+    storageState: `e2e/.auth/${storageState}`,
+  },
+  testMatch: /responsive-certification\.spec\.js/,
+}));
+
+export default defineConfig({
+  testDir: "./e2e",
+  fullyParallel: false,
+  forbidOnly: Boolean(process.env.CI),
+  retries: process.env.CI ? 1 : 0,
+  workers: 1,
+  timeout: 60_000,
+  actionTimeout: 15_000,
+  expect: { timeout: 15_000 },
+  reporter: [["list"]],
+  globalSetup: "./e2e/global-setup.js",
+  use: {
+    baseURL,
+    trace: "on-first-retry",
+    screenshot: "only-on-failure",
+  },
+  projects: [
+    {
+      name: "accountant",
+      use: {
+        ...devices["Desktop Chrome"],
+        storageState: "e2e/.auth/accountant.json",
+      },
+      testMatch: /accounts-dashboard\.spec\.js/,
+    },
+    {
+      name: "accountant-login",
+      use: { ...devices["Desktop Chrome"] },
+      testMatch: /accounts-login\.spec\.js/,
+    },
+    {
+      name: "operator",
+      use: {
+        ...devices["Desktop Chrome"],
+        storageState: "e2e/.auth/operator.json",
+      },
+      testMatch: /accounts-operator\.spec\.js/,
+    },
+    {
+      name: "auth-cookies",
+      use: { ...devices["Desktop Chrome"] },
+      testMatch: /auth-session-cookies\.spec\.js/,
+    },
+    {
+      name: "auth-advanced",
+      use: { ...devices["Desktop Chrome"] },
+      testMatch: /auth-session-advanced\.spec\.js/,
+    },
+    {
+      name: "auth-staging",
+      use: {
+        ...devices["Desktop Chrome"],
+        trace: "off",
+        screenshot: "off",
+        video: "off",
+      },
+      testMatch: /auth-staging-topology\.spec\.js/,
+    },
+    {
+      name: "store-manager-staging",
+      timeout: 90_000,
+      use: {
+        ...devices["Desktop Chrome"],
+        baseURL: process.env.E2E_STAGING_BASE_URL || baseURL,
+        trace: "on-first-retry",
+        screenshot: "only-on-failure",
+      },
+      testMatch: /store-manager-inventory-toolkit-staging\.spec\.js/,
+    },
+    {
+      name: "manufacturing",
+      timeout: 120_000,
+      use: { ...devices["Desktop Chrome"] },
+      testMatch: /manufacturing-workflow\.spec\.js/,
+    },
+    {
+      name: "approvals-verification",
+      timeout: 180_000,
+      use: {
+        ...devices["Desktop Chrome"],
+        baseURL,
+        screenshot: "off",
+        trace: "off",
+      },
+      testMatch: /approvals-page-verification\.spec\.js/,
+    },
+    {
+      name: "auth-live-login",
+      timeout: 90_000,
+      use: { ...devices["Desktop Chrome"], baseURL },
+      testMatch: /auth-live-login-logout\.spec\.js/,
+    },
+    ...responsiveRoleProjects,
+  ],
+  webServer: process.env.E2E_SKIP_WEB_SERVER
+    ? undefined
+    : {
+        command: "npm run dev",
+        url: baseURL,
+        reuseExistingServer: true,
+        timeout: 120_000,
+      },
+});

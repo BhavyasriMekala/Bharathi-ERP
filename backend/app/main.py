@@ -1,0 +1,710 @@
+import socket
+
+# Force IPv4-first DNS resolution globally for all outbound sockets.
+# Fixes '[Errno 101] Network is unreachable' on cloud hosting (Render/AWS containers)
+# where IPv6 DNS returns AAAA records first but IPv6 routing is unavailable.
+_orig_getaddrinfo = socket.getaddrinfo
+
+def _getaddrinfo_ipv4_first(host, port, family=0, type=0, proto=0, flags=0):
+    if family == 0 or family == socket.AF_UNSPEC:
+        family = socket.AF_INET
+    try:
+        return _orig_getaddrinfo(host, port, family, type, proto, flags)
+    except Exception:
+        return _orig_getaddrinfo(host, port, 0, type, proto, flags)
+
+if not getattr(socket, "_ipv4_patched", False):
+    socket.getaddrinfo = _getaddrinfo_ipv4_first
+    socket._ipv4_patched = True
+
+import time
+import uuid
+
+
+from sqlalchemy import Integer, text
+from sqlalchemy.exc import (
+    IntegrityError,
+    OperationalError,
+    SQLAlchemyError,
+    TimeoutError as DbPoolTimeoutError,
+)
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.openapi.docs import get_redoc_html
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.core.config import get_settings
+from app.middleware.csrf_middleware import CsrfMiddleware
+from app.middleware.operator_allowlist import OperatorAllowlistMiddleware
+from app.core.logging_config import get_logger, setup_logging
+
+from app.api.accounts import router as accounts_router
+from app.api.admin import router as admin_router
+from app.api.ai_assistant import router as ai_assistant_router
+from app.api.alerts import router as alerts_router
+from app.api.analytics import router as analytics_router
+from app.api.audit_logs import router as audit_logs_router
+from app.api.auth import router as auth_router
+from app.api.business_documents_api import router as business_documents_router
+from app.api.audit_api import router as audit_api_router
+from app.api.login_history import router as login_history_router
+from app.api.platform_api import router as platform_router
+from app.api.rbac_api import router as rbac_api_router
+from app.middleware.audit_middleware import AuditMiddleware
+from app.middleware.security import ApiRateLimitMiddleware
+from app.api.dispatch import router as dispatch_router
+from app.api.export_packing_api import router as export_packing_router
+from app.api.dispatch_addresses_api import router as dispatch_addresses_router
+from app.api.documents import router as documents_router
+from app.api.files_api import router as files_router
+from app.api.factory_monitor import router as factory_monitor_router
+from app.api.forecasting import router as forecasting_router
+from app.api.departments import router as departments_router
+from app.api.hr import router as hr_router
+from app.api.integration import router as integration_router
+from app.api.inventory import router as inventory_router
+from app.api.godown_toolkit import router as godown_toolkit_router
+from app.api.inventory_v2 import router as inventory_v2_router
+from app.api.iot import router as iot_router
+from app.api.maintenance import router as maintenance_router
+from app.api.meetings import google_router as google_calendar_router
+from app.api.meetings import router as meetings_router
+from app.api.work_chat import router as work_chat_router
+from app.api.procurement import router as procurement_router
+from app.api.production_scheduling import router as production_scheduling_router
+from app.api.quality import router as quality_router
+from app.api.public_quotations import router as public_quotations_router
+from app.api.crm_tracker import router as crm_tracker_router
+from app.api.daily_sales import router as daily_sales_router
+from app.api.order_delivery import router as order_delivery_router
+from app.api.sales import router as sales_router
+from app.api.settings import router as company_settings_router
+from app.api.supply_chain import router as supply_chain_router
+from app.api.task_management import router as task_management_router
+from app.api.warehouse import router as warehouse_router
+from app.api.v1.agent import router as agent_api_router
+from app.api.v1.documents import router as document_library_router
+from app.api.v1.operator_execution import router as operator_execution_router
+from app.api.metric_report_email_api import router as metric_report_email_router
+from app.api.automation_api import router as automation_api_router
+from app.api.bharathi_api import router as bharathi_api_router
+from app.api.v1.reports import router as reports_engine_router
+from app.routers import (
+    dashboard_api_router,
+    masters_api_router,
+    notifications_api_router,
+    operator_api_router,
+    production_api_router,
+    settings_api_router,
+)
+from app.routers.bom_api import router as bom_api_router
+from app.core.database import engine
+
+# Import all models so they register with Base.metadata
+from app.models import (  # noqa: F401
+    accounts,
+    ai_conversation,
+    ai_agent,
+    alert,
+    bom,
+    product_bom_structure,
+    company_settings,
+    department,
+    document,
+    file_storage,
+    erp_notification,
+    hr,
+    hr_module,
+    inventory,
+    machine,
+    maintenance,
+    meeting,
+    notification,
+    permission,
+    platform,
+    procurement,
+    production,
+    product,
+    quality,
+    reporting,
+    role,
+    sales,
+    security,
+    task,
+    tenant,
+    user,
+)
+
+settings = get_settings()
+setup_logging("INFO")
+logger = get_logger("gns_insights")
+
+# redoc_url=None — default FastAPI template points at redoc@next (404 on jsDelivr)
+app = FastAPI(
+    title="Bharathi Enterprises ERP API",
+    version="1.0.0",
+    redoc_url=None,
+    docs_url=None if settings.is_production else "/docs",
+    openapi_url=None if settings.is_production else "/openapi.json",
+)
+
+
+@app.get("/redoc", include_in_schema=False)
+async def redoc_ui() -> HTMLResponse:
+    """ReDoc with a pinned CDN bundle (redoc@next is unpublished / 404)."""
+    if settings.is_production:
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+    return get_redoc_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} - ReDoc",
+        redoc_js_url="https://cdn.jsdelivr.net/npm/redoc@2.1.5/bundles/redoc.standalone.js",
+    )
+
+
+if settings.is_production:
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=settings.allowed_host_list,
+    )
+
+app.add_middleware(ApiRateLimitMiddleware)
+app.add_middleware(AuditMiddleware)
+_cors_kwargs = {
+    "allow_origins": settings.cors_origin_list,
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+}
+_cors_regex = settings.cors_allow_origin_regex
+if _cors_regex:
+    _cors_kwargs["allow_origin_regex"] = _cors_regex
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
+app.add_middleware(CsrfMiddleware)
+app.add_middleware(OperatorAllowlistMiddleware)
+
+
+@app.middleware("http")
+async def https_redirect_middleware(request: Request, call_next):
+    """Redirect plain HTTP → HTTPS behind a reverse proxy in production."""
+    if settings.is_production:
+        proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "").lower()
+        if proto == "http":
+            https_url = request.url.replace(scheme="https")
+            return RedirectResponse(str(https_url), status_code=301)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+    )
+    path = request.url.path or ""
+    # Swagger / ReDoc only — ERP API routes keep the strict policy below
+    if path.startswith(("/docs", "/redoc", "/openapi.json")):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+            "img-src 'self' data: https://fastapi.tiangolo.com https://cdn.jsdelivr.net; "
+            "font-src 'self' data: https://cdn.jsdelivr.net https://fonts.gstatic.com; "
+            "connect-src 'self'; "
+            "worker-src 'self' blob:; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'"
+        )
+    else:
+        # Strict CSP for all authenticated ERP / API responses
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'"
+        )
+    if settings.is_production:
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains; preload"
+        )
+    return response
+
+
+@app.middleware("http")
+async def request_context_middleware(request: Request, call_next):
+    """Attach a request id, time the request, and log the outcome."""
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    request.state.request_id = request_id
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed = (time.perf_counter() - start) * 1000
+        logger.exception(
+            "request_failed id=%s %s %s (%.1fms)",
+            request_id,
+            request.method,
+            request.url.path,
+            elapsed,
+        )
+        raise
+    elapsed = (time.perf_counter() - start) * 1000
+    response.headers["X-Request-ID"] = request_id
+    logger.info(
+        "id=%s %s %s -> %s (%.1fms)",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed,
+    )
+    return response
+
+
+from fastapi.encoders import jsonable_encoder
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    from app.utils.error_sanitizer import sanitize_client_message
+
+    detail = jsonable_encoder(exc.detail)
+    error_code = detail.get("code") if isinstance(detail, dict) else None
+    if request.url.path.startswith("/api/"):
+        from app.utils.api_response import error_response
+
+        if isinstance(detail, dict):
+            raw_message = (
+                detail.get("message")
+                or detail.get("detail")
+                or "Request failed"
+            )
+            message = sanitize_client_message(str(raw_message), status_code=exc.status_code)
+            blockers = detail.get("blockers")
+            errors = blockers if isinstance(blockers, list) and blockers else [message]
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=error_response(message, errors=errors, data=detail, code=error_code),
+            )
+        message = sanitize_client_message(
+            str(detail) if detail is not None else "Request failed",
+            status_code=exc.status_code,
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=error_response(message, errors=[message]),
+        )
+    if isinstance(detail, dict):
+        raw_message = detail.get("message") or detail.get("detail") or "Request failed"
+        safe_message = sanitize_client_message(str(raw_message), status_code=exc.status_code)
+        # Preserve structured payloads (validation errors, RBAC codes) for non-/api/ routes.
+        structured = dict(detail)
+        structured["message"] = safe_message
+        if isinstance(structured.get("detail"), str):
+            structured["detail"] = safe_message
+        body = {
+            "detail": structured,
+            "request_id": getattr(request.state, "request_id", None),
+        }
+        if error_code:
+            body["code"] = error_code
+        if detail.get("module"):
+            body["module"] = detail.get("module")
+        return JSONResponse(status_code=exc.status_code, content=body)
+    safe_detail = sanitize_client_message(
+        str(detail) if detail is not None else "Request failed",
+        status_code=exc.status_code,
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": safe_detail, "request_id": getattr(request.state, "request_id", None)},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    raw_errors = jsonable_encoder(exc.errors())
+    formatted_errors = []
+    for e in raw_errors:
+        loc_parts = [str(x) for x in e.get("loc", []) if str(x) not in ("body", "query", "path")]
+        field = " -> ".join(loc_parts)
+        msg = e.get("msg", "Invalid value")
+        if field:
+            formatted_errors.append(f"{field}: {msg}")
+        else:
+            formatted_errors.append(msg)
+
+    first_detail = "Enter valid inputs"
+    if any("to_email" in str(e).lower() for e in formatted_errors):
+        first_detail = "Please enter a valid recipient email address."
+
+    if request.url.path.startswith("/api/"):
+        from app.utils.api_response import error_response
+
+        return JSONResponse(status_code=422, content=error_response(first_detail, errors=formatted_errors))
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": first_detail,
+            "errors": formatted_errors,
+            "request_id": getattr(request.state, "request_id", None),
+        },
+    )
+
+
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(request: Request, exc: IntegrityError):
+    logger.warning(
+        "integrity_error id=%s",
+        getattr(request.state, "request_id", None),
+    )
+    from app.utils.error_sanitizer import sanitize_client_message
+
+    message = sanitize_client_message(None, status_code=409)
+    if request.url.path.startswith("/api/"):
+        from app.utils.api_response import error_response
+
+        return JSONResponse(status_code=409, content=error_response(message, errors=[message]))
+    return JSONResponse(
+        status_code=409,
+        content={"detail": message, "request_id": getattr(request.state, "request_id", None)},
+    )
+
+
+@app.exception_handler(DbPoolTimeoutError)
+async def database_pool_timeout_handler(request: Request, exc: DbPoolTimeoutError):
+    logger.warning(
+        "db_pool_timeout id=%s path=%s",
+        getattr(request.state, "request_id", None),
+        request.url.path,
+    )
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "5"},
+        content={
+            "detail": "Database is busy. Please retry shortly.",
+            "request_id": getattr(request.state, "request_id", None),
+        },
+    )
+
+
+@app.exception_handler(OperationalError)
+async def database_connection_handler(request: Request, exc: OperationalError):
+    logger.error(
+        "database_connection_error id=%s",
+        getattr(request.state, "request_id", None),
+    )
+    detail = "Database connection failed."
+    if not settings.is_production:
+        detail += " Run backend/scripts/setup_postgres.ps1 to create the database user."
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": detail,
+            "request_id": getattr(request.state, "request_id", None),
+        },
+    )
+
+
+@app.exception_handler(SQLAlchemyError)
+async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError):
+    logger.exception("database_error id=%s", getattr(request.state, "request_id", None))
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "A database error occurred.",
+            "request_id": getattr(request.state, "request_id", None),
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception("unhandled_error id=%s", getattr(request.state, "request_id", None))
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Internal server error.",
+            "request_id": getattr(request.state, "request_id", None),
+        },
+    )
+
+
+@app.get("/health", tags=["health"])
+def health():
+    if settings.is_production:
+        return {"status": "ok"}
+    return {"status": "ok", "environment": settings.environment}
+
+
+@app.get("/health/db", tags=["health"])
+def health_db():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        if settings.is_production:
+            return {"status": "ok"}
+        return {"status": "ok", "database": "reachable"}
+    except SQLAlchemyError:
+        return JSONResponse(status_code=503, content={"status": "error"})
+
+
+@app.on_event("startup")
+def on_startup():
+    """Verify database connectivity; apply dev-only schema sync; run idempotent seeds."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except OperationalError:
+        logger.error(
+            "Database is unreachable or credentials are wrong. "
+            "Verify DATABASE_URL and PostgreSQL availability before starting the API."
+        )
+        if settings.is_production:
+            raise RuntimeError("PostgreSQL is required but unreachable at startup")
+        return
+
+    from app.services.email_service import log_smtp_startup_status
+    from app.services.automation.scheduler import start_automation_scheduler
+
+    log_smtp_startup_status()
+    start_automation_scheduler()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    """Stop the in-process automation scheduler and release advisory locks cleanly."""
+    from app.services.automation.scheduler import stop_automation_scheduler
+
+    stop_automation_scheduler(join_timeout=5.0)
+
+    # Production schema is managed exclusively by Alembic — never create_all / runtime DDL.
+    if not settings.is_production:
+        try:
+            from sqlalchemy import inspect
+            from app.models.base import Base
+
+            Base.metadata.create_all(bind=engine)
+            with engine.begin() as conn:
+                inspector = inspect(conn)
+                db_tables = set(inspector.get_table_names())
+                # Batch query all existing columns in a single round-trip for fast startup
+                cols_by_table = {}
+                if conn.dialect.name == "postgresql":
+                    res = conn.execute(
+                        text("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public'")
+                    ).fetchall()
+                    for t_name, c_name in res:
+                        cols_by_table.setdefault(t_name, set()).add(c_name)
+
+                for table_name, table in Base.metadata.tables.items():
+                    if table_name in db_tables:
+                        existing_cols = cols_by_table.get(table_name)
+                        if existing_cols is None:
+                            existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
+                        for col in table.columns:
+                            if col.name not in existing_cols:
+                                col_type = col.type.compile(engine.dialect)
+                                logger.info(
+                                    "Adding missing column %s (%s) to %s",
+                                    col.name,
+                                    col_type,
+                                    table_name,
+                                )
+                                conn.execute(
+                                    text(f"ALTER TABLE {table_name} ADD COLUMN {col.name} {col_type}")
+                                )
+                if conn.dialect.name == "postgresql":
+                    for table_name in ("inventory_items", "stock_levels", "stock_movements"):
+                        if table_name in db_tables:
+                            columns = {
+                                column["name"]: column["type"]
+                                for column in inspector.get_columns(table_name)
+                            }
+                            if isinstance(columns.get("quantity"), Integer):
+                                conn.execute(
+                                    text(
+                                        f"ALTER TABLE {table_name} ALTER COLUMN quantity "
+                                        "TYPE NUMERIC(12, 2) USING quantity::numeric"
+                                    )
+                                )
+                if "products" in db_tables:
+                    product_columns = {
+                        column["name"]
+                        for column in inspector.get_columns("products")
+                    }
+                    if "is_sellable" in product_columns:
+                        conn.execute(
+                            text(
+                                "UPDATE products SET is_sellable = CASE "
+                                "WHEN lower(trim(coalesce(category, ''))) IN "
+                                "('finished goods', 'finished good', 'service', 'services') "
+                                "THEN TRUE ELSE FALSE END "
+                                "WHERE is_sellable IS NULL"
+                            )
+                        )
+        except Exception:
+            logger.warning("Development schema sync bypassed or interrupted")
+
+    from app.core.database import SessionLocal
+    from app.core.seed_finance import seed_finance_data
+    from app.core.seed_hr import seed_hr_data
+    from app.core.seed_roles import seed_roles
+    from app.core.seed_super_admin import seed_super_admin
+    from app.core.seed_tenant import seed_tenant
+    from app.core.seed_users import seed_admin_user
+
+    from sqlalchemy import func, select
+
+    from app.models.sales import Invoice as InvoiceModel
+    from app.models.tenant import Tenant
+
+    db = SessionLocal()
+    try:
+        seed_super_admin(db)
+        if not settings.is_production:
+            seed_tenant(db)
+            tenant_ids = list(db.scalars(select(Tenant.id)).all()) or [1]
+            for tid in tenant_ids:
+                seed_roles(db, tenant_id=tid)
+                seed_hr_data(db, tenant_id=tid)
+            seed_admin_user(db)
+
+            all_tenants = db.scalars(select(Tenant)).all()
+            for t in all_tenants:
+                inv_count = db.scalar(
+                    select(func.count(InvoiceModel.id)).where(InvoiceModel.tenant_id == t.id)
+                )
+                if not inv_count:
+                    seed_finance_data(db, tenant_id=t.id)
+        else:
+            tenant_ids = list(db.scalars(select(Tenant.id)).all())
+            for tid in tenant_ids:
+                seed_roles(db, tenant_id=tid)
+    except Exception:
+        logger.exception("Seed warning during startup")
+    finally:
+        db.close()
+
+    # Production safety: empty / incomplete CORS allowlist breaks cookie auth from Firebase Hosting.
+    if settings.is_production:
+        origins = settings.cors_origin_list
+        frontend = (settings.frontend_base_url or "").rstrip("/")
+        if not origins:
+            logger.error(
+                "Production CORS allowlist is empty — browser sessions from the SPA will fail. "
+                "Set CORS_ORIGINS to include the Firebase / custom domain origins."
+            )
+        elif frontend and frontend not in origins and not settings.cors_origin_allowed_by_regex(frontend):
+            logger.warning(
+                "FRONTEND_BASE_URL=%s is not in CORS_ORIGINS (and does not match the trusted-host regex). "
+                "Cross-site cookie auth from that origin will fail.",
+                frontend,
+            )
+        else:
+            logger.info("Production CORS allowlist entries=%s frontend=%s", len(origins), frontend or "(unset)")
+
+    if not settings.is_production:
+        key = (settings.openai_api_key or "").strip()
+        prefix = f"{key[:6]}..." if len(key) >= 6 else ("NOT SET" if not key else "(short)")
+        logger.info(
+            "OpenAI config: OPENAI_API_KEY=%s OPENAI_MODEL=%s",
+            prefix,
+            settings.openai_model,
+        )
+
+
+app.include_router(settings_api_router)
+app.include_router(notifications_api_router)
+# Versioned BOM must register before operator_api /api/bom/{id} (legacy BillOfMaterial).
+app.include_router(bom_api_router)
+# Static paths like /api/machines/my must register before operator_api /machines/{machine_id}
+app.include_router(operator_execution_router, prefix="/api")
+app.include_router(operator_api_router)
+app.include_router(dashboard_api_router)
+app.include_router(masters_api_router)
+app.include_router(production_api_router)
+app.include_router(ai_assistant_router)
+app.include_router(ai_assistant_router, prefix="/api")  # /api/ai/* alias for production proxy
+app.include_router(auth_router)
+app.include_router(auth_router, prefix="/api")
+app.include_router(login_history_router)
+app.include_router(login_history_router, prefix="/api")
+app.include_router(audit_api_router, prefix="/api")
+app.include_router(platform_router)
+app.include_router(rbac_api_router)
+# /api aliases for auth RBAC catalog (users, roles, permissions, sidebar, profile)
+app.include_router(rbac_api_router, prefix="/api")
+
+# ERP domain modules (Sales, Finance, Procurement, Quality, Maintenance, Analytics, Inventory)
+app.include_router(public_quotations_router, prefix="/api")
+app.include_router(crm_tracker_router)
+app.include_router(crm_tracker_router, prefix="/api")
+app.include_router(daily_sales_router)
+app.include_router(daily_sales_router, prefix="/api")
+app.include_router(order_delivery_router)
+app.include_router(order_delivery_router, prefix="/api")
+app.include_router(sales_router)
+app.include_router(sales_router, prefix="/api")
+app.include_router(business_documents_router)
+app.include_router(accounts_router)
+app.include_router(procurement_router)
+app.include_router(quality_router)
+app.include_router(maintenance_router)
+app.include_router(analytics_router)
+app.include_router(departments_router)
+app.include_router(hr_router)
+app.include_router(inventory_router)
+app.include_router(inventory_router, prefix="/api")
+app.include_router(godown_toolkit_router)
+app.include_router(godown_toolkit_router, prefix="/api")
+app.include_router(inventory_v2_router)
+app.include_router(inventory_v2_router, prefix="/api")
+app.include_router(alerts_router)
+app.include_router(alerts_router, prefix="/api")
+app.include_router(admin_router)
+app.include_router(company_settings_router)
+app.include_router(company_settings_router, prefix="/api")
+app.include_router(documents_router)
+app.include_router(documents_router, prefix="/api")
+app.include_router(files_router)
+app.include_router(files_router, prefix="/api")
+app.include_router(bharathi_api_router)
+app.include_router(bharathi_api_router, prefix="/api")
+app.include_router(dispatch_router)
+app.include_router(export_packing_router)
+app.include_router(export_packing_router, prefix="/api")
+app.include_router(dispatch_addresses_router)
+app.include_router(factory_monitor_router)
+app.include_router(forecasting_router)
+app.include_router(integration_router)
+app.include_router(meetings_router)
+app.include_router(meetings_router, prefix="/api")
+app.include_router(work_chat_router)
+app.include_router(work_chat_router, prefix="/api")
+app.include_router(google_calendar_router)
+app.include_router(google_calendar_router, prefix="/api")
+app.include_router(iot_router)
+app.include_router(production_scheduling_router)
+app.include_router(task_management_router)
+app.include_router(task_management_router, prefix="/api")
+app.include_router(audit_logs_router)
+app.include_router(warehouse_router)
+app.include_router(supply_chain_router)
+from app.api.system_data import router as system_data_router
+from app.api.manufacturing_workflow_api import router as manufacturing_workflow_router
+app.include_router(system_data_router, prefix="/api")
+app.include_router(manufacturing_workflow_router)
+app.include_router(reports_engine_router, prefix="/api")
+app.include_router(metric_report_email_router)
+app.include_router(automation_api_router)
+app.include_router(agent_api_router, prefix="/api")
+app.include_router(document_library_router, prefix="/api")

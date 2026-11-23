@@ -1,0 +1,137 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+import DataTable from "../../../components/common/DataTable";
+import ExportDownloadMenu from "../../../components/common/ExportDownloadMenu";
+import SkeletonTable from "../../../components/common/SkeletonTable";
+import { ListPageCard, ListPageCardBody } from "../../../components/common/ListPageShell";
+import SalesPlanningShell from "../../../components/sales/SalesPlanningShell";
+import KpiCard from "../../../components/common/KpiCard";
+import { useToast } from "../../../context/ToastContext";
+import { getQuotationSummary, getQuotationsEnriched } from "../../../api/salesApi";
+import { formatInr, statusColor } from "../../../data/salesMasterData";
+import { asArray } from "../../../utils/apiError";
+import { runListExport } from "../../../utils/listExport";
+
+const EXPORT_COLUMNS = [
+  { key: "quote_number", label: "Quotation #" },
+  { key: "customer_name", label: "Customer" },
+  { key: "status", label: "Status" },
+  { key: "valid_until", label: "Valid until" },
+  { key: "amount", label: "Amount" },
+];
+
+function reportRows(raw) {
+  return (raw || []).map((r) => ({
+    ...r,
+    quote_number: r.quote_number || r.quotation_number,
+    amount: r.amount ?? r.grand_total ?? 0,
+  }));
+}
+
+export default function QuotationReport() {
+  const { addToast } = useToast();
+  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState([]);
+  const [summary, setSummary] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [quotesRes, summaryRes] = await Promise.all([
+        getQuotationsEnriched(),
+        getQuotationSummary(),
+      ]);
+      setRows(reportRows(asArray(quotesRes.data)));
+      setSummary(summaryRes.data || null);
+    } catch {
+      setRows([]);
+      setSummary(null);
+      addToast("Failed to load quotation report", "error");
+    } finally {
+      setLoading(false);
+    }
+  }, [addToast]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const columns = useMemo(
+    () => [
+      { key: "quote_number", label: "Quotation #", sortable: true },
+      { key: "customer_name", label: "Customer", sortable: true },
+      {
+        key: "status",
+        label: "Status",
+        render: (row) => (
+          <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${statusColor(row.status)}`}>
+            {row.status || "—"}
+          </span>
+        ),
+      },
+      { key: "valid_until", label: "Valid until", sortable: true },
+      {
+        key: "amount",
+        label: "Amount",
+        render: (row) => formatInr(row.amount),
+        sortable: true,
+      },
+    ],
+    []
+  );
+
+  return (
+    <SalesPlanningShell
+      theme="purple"
+      kicker="Quote · Convert · Review"
+      title="QUOTATION"
+      accent="REPORT"
+      meta={loading ? "Loading" : `${rows.length} quotation${rows.length === 1 ? "" : "s"}`}
+      actions={
+          <ExportDownloadMenu
+            disabled={!rows.length}
+            onExportExcel={() =>
+              runListExport("excel", {
+                data: rows,
+                columns: EXPORT_COLUMNS,
+                filename: "quotation-report",
+                title: "Quotation Report",
+              })
+            }
+            onExportPdf={() =>
+              runListExport("pdf", {
+                data: rows,
+                columns: EXPORT_COLUMNS,
+                filename: "quotation-report",
+                title: "Quotation Report",
+              })
+            }
+          />
+        }
+    >
+      {summary && (
+        <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <KpiCard label="Total quotations" value={summary.total_quotations ?? rows.length} />
+          <KpiCard
+            label="Open quotations"
+            value={summary.open_quotations ?? (Number(summary.draft || 0) + Number(summary.sent || 0))}
+          />
+          <KpiCard label="Pipeline value" value={formatInr(summary.pipeline_value)} />
+          <KpiCard
+            label="Converted to sales order"
+            value={summary.converted_to_sales_orders ?? summary.accepted ?? "—"}
+          />
+        </div>
+      )}
+      <ListPageCard>
+        <ListPageCardBody>
+          {loading ? (
+            <SkeletonTable rows={8} cols={5} />
+          ) : (
+            <DataTable columns={columns} data={rows} rowKey="id" emptyMessage="No quotations found." />
+          )}
+        </ListPageCardBody>
+      </ListPageCard>
+    </SalesPlanningShell>
+  );
+}

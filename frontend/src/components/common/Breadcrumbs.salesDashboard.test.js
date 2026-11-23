@@ -1,0 +1,32 @@
+import { describe, expect, it } from "vitest";
+
+import { getBreadcrumbTrail, getPageTitle } from "./Breadcrumbs";
+
+describe("Breadcrumbs sales manager dashboard", () => {
+  it("uses Dashboard title for canonical /sales route", () => {
+    expect(getPageTitle("/sales")).toBe("Dashboard");
+    expect(getPageTitle("/sales/")).toBe("Dashboard");
+  });
+
+  it("treats /sales as a role dashboard home (single Dashboard crumb)", () => {
+    const trail = getBreadcrumbTrail("/sales");
+    expect(trail).toEqual([{ label: "Dashboard", path: "/sales" }]);
+  });
+
+  it("keeps child sales routes unchanged", () => {
+    expect(getPageTitle("/sales/leads")).toBe("Leads");
+    expect(getPageTitle("/sales/quotations")).toBe("Quotations");
+    expect(getPageTitle("/sales/orders")).toBe("Sales Orders");
+    expect(getPageTitle("/sales/customers")).toBe("Customers");
+  });
+
+  it("shows Create New Lead for /sales/leads/new instead of Lead Details", () => {
+    expect(getPageTitle("/sales/leads/new")).toBe("Create New Lead");
+    const trail = getBreadcrumbTrail("/sales/leads/new");
+    expect(trail).toHaveLength(4);
+    expect(trail[0]).toEqual({ label: "Dashboard", path: "/" });
+    expect(trail[1]).toEqual({ label: "Sales", path: "/sales" });
+    expect(trail[2]).toEqual({ label: "Leads", path: "/sales/leads" });
+    expect(trail[3]).toEqual({ label: "Create New Lead", path: "/sales/leads/new" });
+  });
+});

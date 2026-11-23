@@ -1,0 +1,45 @@
+import { describe, expect, it } from "vitest";
+import { resolveErpAiAssistantMode } from "./utils/erpAiAssistant";
+
+/** Same contract as App.jsx without importing the full application shell. */
+function shouldShowChatbot(user, pathname) {
+  return resolveErpAiAssistantMode(user, pathname) === "shared";
+}
+
+describe("shouldShowChatbot", () => {
+  it("shows the shared assistant for operator users on allowed routes", () => {
+    expect(shouldShowChatbot({ role: "Operator" }, "/")).toBe(true);
+    expect(shouldShowChatbot({ role: "Operator" }, "/my-job-cards")).toBe(true);
+    expect(shouldShowChatbot({ role: "Operator" }, "/production/my-machine")).toBe(true);
+    expect(shouldShowChatbot({ role: "Operator" }, "/dashboard")).toBe(true);
+    expect(shouldShowChatbot({ role: "Operator" }, "/alerts")).toBe(true);
+    expect(shouldShowChatbot({ role: "Operator" }, "/documents")).toBe(true);
+    expect(shouldShowChatbot({ role: "Operator" }, "/production/dashboard")).toBe(false);
+    expect(shouldShowChatbot({ role: "Operator" }, "/production/work-orders")).toBe(false);
+    expect(shouldShowChatbot({ role: "Operator" }, "/factory-monitor/machine-status")).toBe(false);
+  });
+
+  it("hides the assistant on blocked modules and for users without module access", () => {
+    expect(shouldShowChatbot({ role: "Operator" }, "/sales/orders")).toBe(false);
+    expect(shouldShowChatbot({ role: "Operator" }, "/store-manager/dashboard")).toBe(false);
+    expect(shouldShowChatbot(null, "/")).toBe(false);
+  });
+
+  it("shows shared assistant for ERP roles on eligible module routes", () => {
+    expect(shouldShowChatbot({ role: "Production Manager", permissions: ["production"] }, "/production/dashboard")).toBe(
+      true
+    );
+    expect(shouldShowChatbot({ role: "Accountant", permissions: ["accounts"] }, "/accounts/dashboard")).toBe(true);
+    expect(shouldShowChatbot({ role: "Viewer", permissions: [] }, "/iot/live-operations")).toBe(false);
+  });
+
+  it("hides the assistant on shell-less and admin routes", () => {
+    expect(shouldShowChatbot({ role: "Operator" }, "/login")).toBe(false);
+    expect(shouldShowChatbot({ role: "Operator" }, "/settings")).toBe(false);
+    expect(shouldShowChatbot({ role: "Operator" }, "/gns-admin")).toBe(false);
+  });
+
+  it("shows assistant for admin on dashboard", () => {
+    expect(shouldShowChatbot({ role: "Admin" }, "/")).toBe(true);
+  });
+});

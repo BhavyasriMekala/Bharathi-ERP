@@ -1,0 +1,80 @@
+import { describe, expect, it } from "vitest";
+
+import { SALES_MANAGER_NAV_ITEMS } from "./salesManagerNavConfig";
+import { SALES_DASHBOARD_PATH } from "../utils/roleRedirect";
+
+describe("salesManagerNavConfig", () => {
+  it("uses one canonical dashboard route", () => {
+    const dashboard = SALES_MANAGER_NAV_ITEMS.find((n) => n.key === "dashboard");
+    expect(dashboard?.to).toBe(SALES_DASHBOARD_PATH);
+    expect(dashboard?.end).toBe(true);
+    const sales = SALES_MANAGER_NAV_ITEMS.find((n) => n.key === "sales");
+    const childLabels = (sales?.children || []).map((c) => c.label);
+    expect(childLabels).not.toContain("Sales Dashboard");
+  });
+
+  it("does not expose unrelated module sections", () => {
+    const keys = SALES_MANAGER_NAV_ITEMS.map((n) => n.key);
+    expect(keys).not.toContain("maintenance");
+    expect(keys).not.toContain("quality");
+    expect(keys).not.toContain("analytics");
+    expect(keys).not.toContain("myJobCards");
+    expect(keys).not.toContain("payments");
+  });
+
+  it("exposes Masters → Customers, Vendors, Products", () => {
+    const masters = SALES_MANAGER_NAV_ITEMS.find((n) => n.key === "masters");
+    expect(masters?.label).toBe("Masters");
+    const children = masters?.children || [];
+    expect(children.map((c) => c.to)).toEqual([
+      "/sales/customers",
+      "/procurement/vendors",
+      "/masters/products",
+    ]);
+    expect(children.map((c) => c.label)).toEqual(["Customers", "Vendors", "Products"]);
+  });
+
+  it("includes sales workflow and order management links without work orders", () => {
+    const salesPaths = (SALES_MANAGER_NAV_ITEMS.find((n) => n.key === "sales")?.children || []).map(
+      (c) => c.to
+    );
+    expect(salesPaths).toContain("/sales/order-delivery-tracker");
+    expect(salesPaths).toContain("/sales/daily-dashboard");
+    expect(salesPaths).toContain("/sales/crm-tracker");
+    expect(salesPaths).toContain("/sales/leads");
+    expect(salesPaths).toContain("/sales/quotations");
+    expect(salesPaths).toContain("/sales/job-order-quotation");
+    expect(salesPaths).toContain("/sales/orders");
+    expect(salesPaths).not.toContain("/sales/customers");
+
+    const orderPaths = (SALES_MANAGER_NAV_ITEMS.find((n) => n.key === "orderManagement")?.children || []).map(
+      (c) => c.to?.split("?")[0]
+    );
+    expect(orderPaths).toContain("/my-job-cards");
+    expect(orderPaths).not.toContain("/production/work-orders");
+    expect(orderPaths).toContain("/sales/shipping");
+  });
+
+  it("exposes sales-scoped report routes", () => {
+    const reportPaths = (SALES_MANAGER_NAV_ITEMS.find((n) => n.key === "reports")?.children || []).map(
+      (c) => c.to
+    );
+    expect(reportPaths).toEqual([
+      "/reports",
+      "/sales/reports/sales",
+      "/sales/reports/sales-orders",
+      "/sales/reports/quotations",
+      "/sales/reports/customers",
+    ]);
+  });
+
+  it("places Work Chat and Meetings immediately above Settings", () => {
+    const keys = SALES_MANAGER_NAV_ITEMS.map((n) => n.key);
+    const chatIdx = keys.indexOf("chat");
+    const meetingsIdx = keys.indexOf("meetings");
+    const settingsIdx = keys.indexOf("settings");
+    expect(chatIdx).toBeGreaterThan(keys.indexOf("reports"));
+    expect(meetingsIdx).toBe(chatIdx + 1);
+    expect(settingsIdx).toBe(meetingsIdx + 1);
+  });
+});

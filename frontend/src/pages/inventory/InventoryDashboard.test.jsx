@@ -1,0 +1,99 @@
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+
+import InventoryDashboard from "./InventoryDashboard";
+
+vi.mock("../../api/inventoryApi", () => ({
+  getStoreDashboard: vi.fn(),
+  getStoreStockValueByCategory: vi.fn(),
+}));
+
+vi.mock("../../hooks/useManufacturingRefresh", () => ({
+  default: () => {},
+}));
+
+vi.mock("../../hooks/useAuth", () => ({
+  default: () => ({ user: { role: "Store Manager" } }),
+}));
+
+import { getStoreDashboard, getStoreStockValueByCategory } from "../../api/inventoryApi";
+
+vi.mock("react-i18next", () => {
+  const t = (key) => key;
+  return { useTranslation: () => ({ t }) };
+});
+
+describe("InventoryDashboard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getStoreStockValueByCategory.mockResolvedValue({
+      data: { total_value: 0, categories: [], has_unvalued: false, partial: false },
+    });
+  });
+
+  it("renders work-center sections from store dashboard API", async () => {
+    getStoreDashboard.mockResolvedValue({
+      data: {
+        catalog_product_count: 12,
+        catalog_low_stock_count: 2,
+        catalog_out_of_stock_count: 1,
+        pending_inventory_checks: 0,
+        store_pending: 0,
+        pending_material_requests: 0,
+        pending_transfers: 0,
+        today_movement: {
+          stock_in_count: 3,
+          stock_out_count: 1,
+          stock_in_quantity: 100,
+          stock_out_quantity: 40,
+        },
+        material_check_queue: [],
+        low_stock_preview: [],
+        pending_material_request_rows: [],
+        pending_transfer_rows: [],
+        recent_stock_activity: [],
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <InventoryDashboard />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Pending Job Cards")).toBeInTheDocument();
+      expect(screen.getAllByText("Pending Material Checks").length).toBeGreaterThan(0);
+    });
+    expect(screen.getByTitle("Pending job cards")).toHaveAttribute(
+      "href",
+      "/my-job-cards?dept=inventory&bucket=store_pending"
+    );
+    const pendingSection = screen.getByRole("heading", { name: "Pending Material Checks" }).closest("section");
+    expect(pendingSection.querySelector("a")).toHaveAttribute(
+      "href",
+      "/my-job-cards?dept=inventory&bucket=store_pending"
+    );
+    expect(screen.queryByText("Today's Stock Movement")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Low Stock Items" })).toBeInTheDocument();
+    expect(
+      await screen.findByText("storeDashboard.stockValueByCategory.title")
+    ).toBeInTheDocument();
+    expect(screen.getByText("No pending material checks")).toBeInTheDocument();
+  });
+
+  it("shows error state when API fails", async () => {
+    getStoreDashboard.mockRejectedValue(new Error("network"));
+
+    render(
+      <MemoryRouter>
+        <InventoryDashboard />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Dashboard unavailable")).toBeInTheDocument();
+    });
+  });
+});

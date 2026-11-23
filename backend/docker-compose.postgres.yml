@@ -1,0 +1,29 @@
+# Local PostgreSQL for Bharathi Enterprises ERP (isolated dev only).
+# Usage:
+#   docker compose -f docker-compose.postgres.yml up -d
+#   set DATABASE_URL=postgresql+psycopg://bharathi_user:bharathi_dev@localhost:55432/bharathi_erp
+#   alembic upgrade head
+#
+# Credentials are for local development only — override via .env on your machine.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bharathi_erp_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bharathi_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bharathi_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-bharathi_erp}
+    ports:
+      - "${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - bharathi_erp_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bharathi_user} -d ${POSTGRES_DB:-bharathi_erp}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  bharathi_erp_pgdata:

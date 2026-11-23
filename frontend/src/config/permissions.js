@@ -1,0 +1,775 @@
+/**
+ * Enterprise RBAC — module codes, action permissions, and route mapping.
+ * Keep in sync with backend `app/core/rbac_constants.py` PERMISSION_MATRIX.
+ */
+
+import {
+  accountantAnalyticsPathAllowed,
+  operatorPathAllowed,
+  productionManagerPathAllowed,
+  qualityControlPathAllowed,
+} from "./rbacNavFilters";
+import {
+  getSettingsSectionIdFromPath,
+  getSettingsSectionModule,
+} from "./settingsAccess";
+import { storeManagerMayAccessProductionPlanning } from "./manufacturingToolkitAccess";
+
+export const ROLES = [
+  { id: "admin", name: "Admin", description: "Full system access" },
+  { id: "sales_manager", name: "Sales Manager", description: "Leads, quotations, sales orders, customers" },
+  { id: "production_manager", name: "Production Manager", description: "Production modules for assigned plant" },
+  { id: "store_manager", name: "Store Manager", description: "Inventory and store operations" },
+  { id: "purchase_manager", name: "Purchase Manager", description: "Purchase requisitions, purchase orders, and procurement approvals" },
+  { id: "quality_control", name: "Quality Control", description: "Quality inspection (QA), tests, and approval stamps" },
+  { id: "hr_manager", name: "HR Manager", description: "Departments and organizational data" },
+  { id: "accountant", name: "Accountant", description: "Finance and accounts" },
+  { id: "operator", name: "Operator", description: "Assigned work orders and machine only" },
+];
+
+export const MODULES = [
+  "dashboard", "masters", "production", "inventory", "procurement",
+  "sales", "accounts", "quality", "maintenance", "analytics", "alerts", "admin",
+  "documents", "documents_ops", "factoryMonitor", "iot", "settings", "meetings", "chat", "hr",
+  "reports",
+];
+
+/** Static fallback matrix — API permissions take precedence when present. */
+export const ROLE_PERMISSIONS = {
+  Admin: MODULES,
+  admin: MODULES,
+  "Production Manager": [
+    "dashboard", "production", "quality", "analytics", "factoryMonitor", "alerts", "documents",
+    "masters", "inventory", "maintenance", "procurement", "settings", "iot", "sales", "accounts", "meetings", "reports",
+  ],
+  production_manager: [
+    "dashboard", "production", "quality", "analytics", "factoryMonitor", "alerts", "documents",
+    "masters", "inventory", "maintenance", "procurement", "settings", "iot", "sales", "accounts", "meetings", "reports",
+  ],
+  "Sales Manager": ["dashboard", "sales", "masters", "alerts", "documents", "meetings", "settings", "reports"],
+  sales_manager: ["dashboard", "sales", "masters", "alerts", "documents", "meetings", "settings", "reports"],
+  "Store Manager": [
+    "dashboard", "inventory", "procurement", "sales", "masters", "alerts", "documents", "meetings", "settings", "analytics", "reports",
+  ],
+  store_manager: [
+    "dashboard", "inventory", "procurement", "sales", "masters", "alerts", "documents", "meetings", "settings", "analytics", "reports",
+  ],
+  "Purchase Manager": [
+    "dashboard", "procurement", "inventory", "masters", "accounts", "alerts", "documents", "analytics", "reports",
+  ],
+  purchase_manager: [
+    "dashboard", "procurement", "inventory", "masters", "accounts", "alerts", "documents", "analytics", "reports",
+  ],
+  "Quality Control": [
+    "dashboard", "quality", "production", "inventory", "documents", "alerts", "analytics", "meetings", "settings",
+  ],
+  quality_control: [
+    "dashboard", "quality", "production", "inventory", "documents", "alerts", "analytics", "meetings", "settings",
+  ],
+  "HR Manager": ["dashboard", "hr", "analytics", "alerts", "documents", "meetings", "settings"],
+  hr_manager: ["dashboard", "hr", "analytics", "alerts", "documents", "meetings", "settings"],
+  Accountant: ["dashboard", "accounts", "sales", "documents", "analytics", "alerts", "masters", "meetings", "settings", "reports"],
+  accountant: ["dashboard", "accounts", "sales", "documents", "analytics", "alerts", "masters", "meetings", "settings", "reports"],
+  Operator: [
+    "dashboard", "production", "factoryMonitor", "documents", "alerts", "settings",
+  ],
+  operator: [
+    "dashboard", "production", "factoryMonitor", "documents", "alerts", "settings",
+  ],
+};
+
+export const RESTRICTED_ACTION_ROLES = new Set(["Operator", "operator"]);
+
+export const VALID_ACTIONS = new Set([
+  "read", "create", "update", "delete", "approve",
+  "create_entry", "update_qty", "update_machine_status", "report_breakdown", "*",
+]);
+
+/** Path-specific overrides evaluated before prefix matching. */
+export const ROUTE_MODULE_OVERRIDES = {
+  "/settings/permissions": "admin",
+  "/settings/users": "admin",
+  "/settings/teams": "admin",
+  "/settings/company": "admin",
+  "/settings/security": "admin",
+  "/settings/audit": "admin",
+  "/settings/ai": "admin",
+  "/settings/integrations": "admin",
+  "/settings/api": "admin",
+  "/settings/backup": "admin",
+  "/settings/change-format": "admin",
+  "/settings/format-settings": "admin",
+  "/settings/invoice-settings": "admin",
+  "/settings/sequence-reset": "admin",
+  "/settings/finance": "admin",
+  "/settings/opening-balances": "accounts",
+  "/settings/documents": "admin",
+  "/settings/production": "admin",
+  "/settings/manufacturing-workflow": "admin",
+  "/settings/invoice-template": "admin",
+  "/settings/template-settings": "admin",
+  "/settings/change-template": "admin",
+  "/settings/alerts": "dashboard",
+  "/settings/subscription": "settings",
+  "/masters/products": "masters",
+  "/masters/categories": "masters",
+  "/inventory/categories": "masters",
+  "/master/products": "masters",
+  "/products": "masters",
+  "/masters/bom": "production",
+  "/production/schedule": "production",
+  "/procurement/rfq": "procurement",
+  "/procurement/vendors": "masters",
+  "/masters/vendors": "masters",
+  "/finance/accounts-payable": "accounts",
+  "/finance/accounts-receivable": "accounts",
+  "/finance/payment-tracking": "accounts",
+  "/finance/general-ledger": "accounts",
+  "/quality/incoming": "quality",
+  "/quality/in-process": "quality",
+  "/quality/final": "quality",
+  "/maintenance/machine-history": "maintenance",
+  "/analytics/sales": "analytics",
+  "/analytics/finance": "analytics",
+  "/reports": "reports",
+  "/inventory/reports": "inventory",
+  "/store/reports": "inventory",
+  "/manufacturing/workflow": "dashboard",
+  "/manufacturing/job-card": "sales",
+  "/my-job-cards": "sales",
+  "/job-cards": "sales",
+  "/sales/job-cards": "sales",
+  "/sales/job-cards/create": "sales",
+  "/hr": "hr",
+  "/ewaybill/login": "sales",
+  "/digital-signature": "sales",
+  "/purchases": "procurement",
+};
+
+export const ROUTE_MODULES = {
+  "/": "dashboard",
+  "/manufacturing": "dashboard",
+  "/masters": "masters",
+  "/master": "masters",
+  "/products": "masters",
+  "/production": "production",
+  "/inventory": "inventory",
+  "/procurement": "procurement",
+  "/purchases": "procurement",
+  "/sales": "sales",
+  "/ewaybill": "sales",
+  "/digital-signature": "sales",
+  "/accounts": "accounts",
+  "/ledger": "accounts",
+  "/finance": "accounts",
+  "/quality": "quality",
+  "/maintenance": "maintenance",
+  "/maintenance/equipment": "maintenance",
+  "/analytics": "analytics",
+  "/alerts": "alerts",
+  "/admin": "admin",
+  "/settings": "settings",
+  "/documents": "documents",
+  "/meetings": "meetings",
+  "/chat": "chat",
+  "/factory-monitor": "factoryMonitor",
+  "/iot": "iot",
+  "/hr": "hr",
+  "/reports": "reports",
+};
+
+export function getModuleForPath(pathname) {
+  const path = pathname.replace(/\/$/, "") || "/";
+  if (ROUTE_MODULE_OVERRIDES[path]) return ROUTE_MODULE_OVERRIDES[path];
+  const sorted = Object.keys(ROUTE_MODULES).sort((a, b) => b.length - a.length);
+  for (const prefix of sorted) {
+    if (path === prefix || path.startsWith(`${prefix}/`)) {
+      return ROUTE_MODULES[prefix];
+    }
+  }
+  return "dashboard";
+}
+
+export function normalizeRoleName(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_\-\s]+/g, " ");
+}
+
+export function getActiveRoleName(user) {
+  if (!user) return "";
+  return String(user.role || user.role_name || "").trim();
+}
+
+export function getUserRoleNames(user) {
+  if (!user) return [];
+  const fromArray = Array.isArray(user.roles)
+    ? user.roles.map((r) => (typeof r === "object" ? r?.name : String(r))).filter(Boolean)
+    : [];
+  const active = getActiveRoleName(user);
+  const set = new Set(fromArray);
+  if (active) set.add(active);
+  return [...set];
+}
+
+export function hasRole(user, roleName) {
+  if (!user || !roleName) return false;
+  const target = normalizeRoleName(roleName);
+  return getUserRoleNames(user).some((r) => normalizeRoleName(r) === target);
+}
+
+/** Alias for userCanAccess — single permission check API. */
+export function hasPermission(user, module) {
+  return userCanAccess(user, module);
+}
+
+/** Reports Center action keys from RBAC matrix (e.g. share, schedule, create). */
+export function userHasReportsAction(user, action) {
+  if (!user || !action) return false;
+  if (isAdmin(user)) return true;
+  const key = `reports:${action}`;
+  if (Array.isArray(user.permissions) && (user.permissions.includes("*") || user.permissions.includes(key))) {
+    return true;
+  }
+  return getEffectivePermissions(user).includes(key);
+}
+
+export function isAdmin(user) {
+  if (!user) return false;
+  if (Array.isArray(user.permissions) && (user.permissions.includes("*") || user.permissions.includes("admin"))) return true;
+  return hasRole(user, "Admin") || hasRole(user, "admin") || hasRole(user, "SuperAdmin") || hasRole(user, "superadmin");
+}
+
+export function getEffectivePermissions(user) {
+  if (!user) return [];
+  if (isAdmin(user)) return [...MODULES, "*"];
+  if (Array.isArray(user.permissions) && user.permissions.length) {
+    return user.permissions;
+  }
+  const activeRole = getActiveRoleName(user);
+  const slug = activeRole.toLowerCase().replace(/\s+/g, "_");
+  const fromRole =
+    ROLE_PERMISSIONS[activeRole] ||
+    ROLE_PERMISSIONS[slug] ||
+    [];
+  if (fromRole.length) return fromRole;
+  const set = new Set();
+  for (const role of getUserRoleNames(user)) {
+    const rName = typeof role === "string" ? role : "";
+    const rSlug = rName.toLowerCase().replace(/\s+/g, "_");
+    (ROLE_PERMISSIONS[rName] || ROLE_PERMISSIONS[rSlug] || []).forEach(
+      (p) => set.add(p)
+    );
+  }
+  return [...set];
+}
+
+export function userHasModule(user, module) {
+  if (!user || !module) return false;
+  if (module === "chat") return true;
+  if (isAdmin(user)) return true;
+  const perms = getEffectivePermissions(user);
+  if (perms.includes("*") || perms.includes(module)) return true;
+  if (module === "settings" && hasRole(user, "Quality Control")) return true;
+  return perms.some((p) => typeof p === "string" && p.startsWith(`${module}:`));
+}
+
+export function userCanAction(user, module, action) {
+  if (!user) return false;
+  if (isAdmin(user)) return true;
+  const perms = getEffectivePermissions(user);
+  if (perms.includes("*") || perms.includes(`${module}:*`) || perms.includes(`${module}:${action}`)) {
+    return true;
+  }
+  if (RESTRICTED_ACTION_ROLES.has(getActiveRoleName(user)) ||
+      RESTRICTED_ACTION_ROLES.has(normalizeRoleName(getActiveRoleName(user)))) {
+    return action === "read" || action === "view";
+  }
+  return perms.includes(module);
+}
+
+export function canAccess(userRole, module) {
+  if (!userRole || !module) return false;
+  if (userRole === "Admin") return true;
+  return (ROLE_PERMISSIONS[userRole] || []).includes(module);
+}
+
+export function userCanAccess(user, module) {
+  return userHasModule(user, module);
+}
+
+/** Paths Store Manager may open (inventory & warehouse operations only). */
+export const STORE_MANAGER_ALLOWED_PATHS = new Set([
+  "/",
+  "/reports",
+  "/inventory",
+  "/inventory/reports",
+  "/store/reports",
+  "/inventory/dashboard",
+  "/inventory/settings",
+  "/inventory/godown-planner",
+  "/inventory/unit-converter",
+  "/inventory/eoq-helper",
+  "/inventory/stock-valuation",
+  "/inventory/hamali-cost",
+  "/inventory/truck-load",
+  "/inventory/damage-loss",
+  "/inventory/storage-quotation",
+  "/inventory/gate-pass",
+  "/inventory/godown-dashboard",
+  "/inventory/raw-materials",
+  "/inventory/finished-goods",
+  "/inventory/stock-transfer",
+  "/inventory/stock-movement",
+  "/inventory/warehouses",
+  "/inventory/items",
+  "/accounts/ledger",
+  "/accounts/expenses",
+  "/ledger",
+  "/procurement/purchase-orders",
+  "/procurement/vendors",
+  "/purchases",
+  "/purchases/payments-made",
+  "/purchases/debit-notes",
+  "/masters/vendors",
+  "/masters/products",
+  "/masters/categories",
+  "/inventory/categories",
+  "/production/bom",
+  "/sales/customers",
+  "/settings",
+  "/settings/my-account",
+  "/settings/my-account/devices",
+  "/alerts/low-stock",
+  "/documents",
+  "/documents/purchase",
+  "/meetings",
+  "/manufacturing/workflow",
+  "/production/planning",
+  "/my-job-cards",
+  "/hr/attendance",
+  "/hr/attendance/approval",
+  "/hr/attendance/overtime",
+  "/hr/attendance/adjusted-leave",
+  "/hr/attendance/settings",
+  "/attendance",
+  "/hr/leave",
+  "/hr/leave/approvals",
+  "/admin/approvals",
+  "/hr/leave/holiday",
+  "/hr/leave/adjustment",
+  "/hr/leave/plans",
+  "/hr/leave/plans/create",
+  "/hr/leave/create",
+  "/leave",
+]);
+
+export function isProductionManager(user) {
+  return hasRole(user, "Production Manager");
+}
+
+export function userCanViewBom(user) {
+  if (!user) return false;
+  if (isOperator(user) || isSalesManager(user)) return false;
+  if (isAdmin(user) || isProductionManager(user) || isStoreManager(user) || isAccountant(user)) return true;
+  return false;
+}
+
+export function userCanEditBom(user) {
+  if (!user) return false;
+  return isAdmin(user) || isProductionManager(user);
+}
+
+export function userCanViewBomCost(user) {
+  if (!user) return false;
+  return isAdmin(user) || isProductionManager(user) || isAccountant(user);
+}
+
+export function isStoreManager(user) {
+  if (!user || isAdmin(user)) return false;
+  return hasRole(user, "Store Manager");
+}
+
+/** Inventory item delete — Admin and Store Manager only (not Production Manager). */
+export function userCanDeleteInventoryItem(user) {
+  if (!user) return false;
+  if (isAdmin(user)) return true;
+  return isStoreManager(user);
+}
+
+/** Manual Sales Job Card create/edit — sales team only (not Store Manager). */
+export function isSalesJobCardAuthoringPath(pathname) {
+  const path = (pathname || "").replace(/\/$/, "") || "/";
+  if (path === "/sales/job-cards/create") return true;
+  return /^\/sales\/job-cards\/[^/]+\/edit$/.test(path);
+}
+
+export function userCanCreateSalesJobCard(user) {
+  if (!user || isStoreManager(user)) return false;
+  return userCanAction(user, "sales", "create") || isAdmin(user);
+}
+
+export function isHRManager(user) {
+  if (!user || isAdmin(user)) return false;
+  return hasRole(user, "HR Manager");
+}
+
+export function isSalesManager(user) {
+  if (!user || isAdmin(user)) return false;
+  return hasRole(user, "Sales Manager");
+}
+
+/** Create New Lead → Assigned Executive → + Add New Name (matches POST /team-directory/sales-executives). */
+export function userCanCreateLead(user) {
+  if (isAdmin(user)) return true;
+  if (isSalesManager(user)) return true;
+  if (userCanAction(user, "leads", "create")) return true;
+  return userCanAction(user, "sales", "create");
+}
+
+export function userCanAddLeadExecutiveName(user) {
+  if (!user) return false;
+  if (isAdmin(user)) return true;
+  if (isSalesManager(user)) return true;
+  if (userCanAction(user, "sales", "create")) return true;
+  return userHasModule(user, "sales");
+}
+
+/** Masters → Products write (pricing included). Accountants are view-only. */
+export function userCanWriteProductMaster(user) {
+  if (!user) return false;
+  if (isAccountant(user)) return false;
+  if (isAdmin(user)) return true;
+  if (isStoreManager(user) || isSalesManager(user)) return true;
+  if (userCanAction(user, "masters", "update")) return true;
+  if (userCanAction(user, "sales", "update")) return true;
+  return false;
+}
+
+export function isAccountant(user) {
+  if (!user || isAdmin(user)) return false;
+  if (hasRole(user, "Accountant")) return true;
+  return getUserRoleNames(user).some((r) => {
+    const n = normalizeRoleName(r);
+    return (
+      n === "accounts" ||
+      n.includes("finance manager") ||
+      n === "billing" ||
+      n.includes("billing")
+    );
+  });
+}
+
+export function isQualityTeam(user) {
+  if (!user || isAdmin(user)) return false;
+  return (
+    hasRole(user, "Quality Control") ||
+    hasRole(user, "Quality Manager") ||
+    hasRole(user, "Quality Inspector") ||
+    hasRole(user, "QA") ||
+    hasRole(user, "QC")
+  );
+}
+
+/** Modules that may access the unified My Job Cards queue (matches backend WORKFLOW_MODULES). */
+export const MY_JOB_CARDS_MODULES = ["sales", "production", "inventory", "quality", "accounts", "admin"];
+
+export function userCanAccessMyJobCards(user) {
+  if (!user) return false;
+  if (isAdmin(user)) return true;
+  return MY_JOB_CARDS_MODULES.some((m) => userCanAccess(user, m));
+}
+
+/** Paths Sales Manager may open (sales workflow + limited cross-module links). */
+export function salesManagerPathAllowed(pathname) {
+  if (!pathname) return false;
+  const path = pathname.replace(/\/$/, "") || "/";
+  if (path === "/" || path === "/sales" || path === "/sales/dashboard") return true;
+  if (path === "/reports" || path.startsWith("/reports/")) return true;
+  if (path.startsWith("/sales")) return true;
+  if (path.startsWith("/my-job-cards")) return true;
+  if (path.startsWith("/job-cards/")) return true;
+  if (
+    path === "/alerts" ||
+    path === "/alerts/order-delays" ||
+    path === "/alerts/production-delay"
+  ) {
+    return true;
+  }
+  if (path.startsWith("/documents")) return true;
+  if (path.startsWith("/meetings")) return true;
+  if (path.startsWith("/chat")) return true;
+  if (path.startsWith("/settings")) return true;
+  if (path.startsWith("/masters/products")) return true;
+  if (path.startsWith("/masters/categories")) return true;
+  if (path.startsWith("/inventory/categories")) return true;
+  if (path.startsWith("/procurement/vendors")) return true;
+  if (path.startsWith("/masters/vendors")) return true;
+  if (path === "/products" || path.startsWith("/products/")) return true;
+  if (path.startsWith("/master/products")) return true;
+  return false;
+}
+
+/** HR attendance/leave URLs that previously bypassed module checks for all users. */
+export function isHrAttendanceLeavePath(pathname) {
+  const path = (pathname || "").replace(/\/$/, "") || "/";
+  return (
+    path === "/hr/attendance" ||
+    path === "/attendance" ||
+    path.startsWith("/hr/attendance/") ||
+    path === "/hr/leave" ||
+    path === "/leave" ||
+    path.startsWith("/hr/leave/")
+  );
+}
+
+/** Store Manager ledger/expense routes without granting full accounts module. */
+export function isStoreManagerLimitedAccountsPath(pathname) {
+  const path = (pathname || "").replace(/\/$/, "") || "/";
+  return (
+    path === "/ledger" ||
+    path.startsWith("/accounts/ledger") ||
+    path.startsWith("/accounts/expenses")
+  );
+}
+
+/**
+ * HR attendance/leave routes: HR admins, or roles with explicit nav allow-lists (e.g. Store Manager).
+ * Does not grant HR module to Sales Manager.
+ */
+export function userCanAccessHrAttendanceLeavePath(user, pathname) {
+  if (!user) return false;
+  if (userCanAccess(user, "hr")) return true;
+  if (isStoreManager(user) && storeManagerPathAllowed(pathname)) return true;
+  if (isProductionManager(user) && productionManagerPathAllowed(pathname)) return true;
+  if (isOperator(user) && operatorPathAllowed(pathname)) return true;
+  return false;
+}
+
+/** Paths removed from Store Manager nav — block direct URL access too. */
+const STORE_MANAGER_BLOCKED_PATH_PREFIXES = [
+  "/procurement/material-requests",
+  "/procurement/goods-receipt",
+  "/procurement/supplier-payments",
+  "/inventory/material-requests",
+  "/inventory/stock-in",
+  "/inventory/issue-materials",
+  "/inventory/stock-return",
+  "/inventory/stock-adjustment",
+  "/inventory/todays-stock-out",
+  "/inventory/stock-ledger",
+  "/inventory/history",
+];
+
+export function storeManagerPathAllowed(pathname) {
+  if (!pathname) return false;
+  const path = pathname.replace(/\/$/, "") || "/";
+  if (path === "/") return true;
+  if (path.startsWith("/job-cards/")) return true;
+  if (path.startsWith("/my-job-cards/")) return true;
+  if (
+    STORE_MANAGER_BLOCKED_PATH_PREFIXES.some(
+      (prefix) => path === prefix || path.startsWith(`${prefix}/`)
+    )
+  ) {
+    return false;
+  }
+  if (STORE_MANAGER_ALLOWED_PATHS.has(path)) return true;
+  if (path === "/reports" || path.startsWith("/reports/")) return true;
+  if (path.startsWith("/inventory")) return true;
+  if (path.startsWith("/store")) return true;
+  if (path.startsWith("/purchases")) return true;
+  if (path.startsWith("/procurement")) return true;
+  if (path.startsWith("/accounts/ledger")) return true;
+  if (path.startsWith("/accounts/expenses")) return true;
+  if (path.startsWith("/masters/products")) return true;
+  if (path.startsWith("/masters/categories")) return true;
+  if (path.startsWith("/inventory/categories")) return true;
+  if (path.startsWith("/procurement/vendors")) return true;
+  if (path.startsWith("/masters/vendors")) return true;
+  if (path.startsWith("/settings")) return true;
+  if (path.startsWith("/alerts")) return true;
+  if (path.startsWith("/documents")) return true;
+  if (path.startsWith("/manufacturing")) return true;
+  if (path.startsWith("/chat")) return true;
+  if (path.startsWith("/meetings")) return true;
+  if (path.startsWith("/sales/customers")) return true;
+  if (path.startsWith("/production/bom")) return true;
+  if (path.startsWith("/production/planning")) return true;
+  return false;
+}
+
+export const MY_SUBSCRIPTION_SETTINGS_SECTION_ID = "subscription";
+
+/** My Subscription settings — tenant Admin role only (not other ERP roles). */
+export function userCanAccessMySubscription(user) {
+  if (!user) return false;
+  if (hasRole(user, "SuperAdmin") || hasRole(user, "superadmin")) return false;
+  return hasRole(user, "Admin") || hasRole(user, "admin");
+}
+
+export function isMySubscriptionSettingsPath(pathname) {
+  const path = (pathname || "").replace(/\/$/, "") || "/";
+  return path === "/settings/subscription" || getSettingsSectionIdFromPath(path) === MY_SUBSCRIPTION_SETTINGS_SECTION_ID;
+}
+
+export function userCanAccessSettingsSection(user, sectionId) {
+  if (!user || !sectionId) return false;
+  if (sectionId === MY_SUBSCRIPTION_SETTINGS_SECTION_ID) {
+    return userCanAccessMySubscription(user);
+  }
+  const routeModule = getModuleForPath(`/settings/${sectionId}`);
+  if (routeModule === "admin" && !userCanAccess(user, "admin")) return false;
+  return userCanAccess(user, getSettingsSectionModule(sectionId));
+}
+
+export function filterAccessibleSettingsCategories(categories, user) {
+  if (!user) return [];
+  return (categories || []).filter((cat) => userCanAccessSettingsSection(user, cat.id));
+}
+
+/** Unified Approvals queue (`/admin/approvals`) — matches backend approval_categories_for_user. */
+export function userCanAccessApprovalQueue(user) {
+  if (!user) return false;
+  if (isAdmin(user)) return true;
+  return (
+    userCanAccess(user, "hr") ||
+    userCanAccess(user, "procurement") ||
+    userCanAccess(user, "production") ||
+    userCanAccess(user, "inventory")
+  );
+}
+
+/**
+ * Extra domain module required in addition to `analytics` for each Analytics child route.
+ * `null` means analytics-module access is sufficient (Executive Dashboard / alias).
+ */
+export const ANALYTICS_CHILD_DOMAIN_MODULE = {
+  "/analytics": null,
+  "/analytics/executive": null,
+  "/analytics/forecasting": null,
+  "/analytics/live": "production",
+  "/analytics/production": "production",
+  "/analytics/machine-efficiency": "production",
+  "/analytics/inventory": "inventory",
+  "/analytics/sales": "sales",
+  "/analytics/finance": "accounts",
+  "/analytics/profit": "accounts",
+};
+
+export function getAnalyticsDomainModule(pathname) {
+  const path = (pathname || "").replace(/\/$/, "") || "/";
+  if (path !== "/analytics" && !path.startsWith("/analytics/")) return undefined;
+  const keys = Object.keys(ANALYTICS_CHILD_DOMAIN_MODULE).sort((a, b) => b.length - a.length);
+  for (const prefix of keys) {
+    if (path === prefix || path.startsWith(`${prefix}/`)) {
+      return ANALYTICS_CHILD_DOMAIN_MODULE[prefix];
+    }
+  }
+  return null;
+}
+
+/**
+ * Analytics child routes require the analytics module plus the mapped domain module.
+ * Accountant is further limited to Executive + Finance KPI (they also have `sales`).
+ */
+export function userCanAccessAnalyticsPath(user, pathname) {
+  if (!user) return false;
+  if (isAdmin(user)) return true;
+  if (!userCanAccess(user, "analytics")) return false;
+  const domain = getAnalyticsDomainModule(pathname);
+  if (domain && !userCanAccess(user, domain)) return false;
+  if (isAccountant(user)) return accountantAnalyticsPathAllowed(pathname);
+  return true;
+}
+
+export function userCanAccessPath(user, pathname) {
+  if (!user) return false;
+  const pathEarly = (pathname || "").replace(/\/$/, "") || "/";
+  if (isMySubscriptionSettingsPath(pathname)) {
+    return userCanAccessMySubscription(user);
+  }
+  if (isAdmin(user)) return true;
+  if (isOperator(user) && !operatorPathAllowed(pathEarly)) return false;
+  // Store Manager: inventory register & raw material tracker only (same Production Planning shell).
+  if (pathEarly.startsWith("/production/planning") && storeManagerMayAccessProductionPlanning(user)) {
+    return true;
+  }
+  const path = pathEarly;
+  if (path === "/admin/approvals") {
+    if (isQualityTeam(user)) return false;
+    return userCanAccessApprovalQueue(user);
+  }
+  if (isHrAttendanceLeavePath(pathname)) {
+    return userCanAccessHrAttendanceLeavePath(user, pathname);
+  }
+  if (isStoreManager(user) && isStoreManagerLimitedAccountsPath(pathname)) {
+    return storeManagerPathAllowed(pathname);
+  }
+  if (isStoreManager(user) && isSalesJobCardAuthoringPath(pathname)) return false;
+  if (path.startsWith("/chat")) return true;
+  if (
+    path === "/my-job-cards" ||
+    path.startsWith("/my-job-cards/") ||
+    path.startsWith("/job-cards/") ||
+    path === "/sales/job-cards/create" ||
+    /^\/sales\/job-cards\/[^/]+$/.test(path)
+  ) {
+    if (!userCanAccessMyJobCards(user)) return false;
+    if (isStoreManager(user) && !storeManagerPathAllowed(pathname)) return false;
+    if (isProductionManager(user) && !productionManagerPathAllowed(pathname)) return false;
+    if (isQualityTeam(user) && !qualityControlPathAllowed(pathname)) return false;
+    if (isOperator(user) && !operatorPathAllowed(pathname)) return false;
+    return true;
+  }
+  if (path.startsWith("/procurement/vendors") || path.startsWith("/masters/vendors")) {
+    if (isProductionManager(user)) return false;
+    if (isQualityTeam(user)) return false;
+    if (!userCanAccess(user, "masters") && !userCanAccess(user, "procurement")) return false;
+    if (isStoreManager(user) && !storeManagerPathAllowed(pathname)) return false;
+    return true;
+  }
+  // BOM maintenance is available to members explicitly granted production access,
+  // even though its route sits under Masters.
+  if (path === "/masters/bom" && userCanAccess(user, "production")) return true;
+  if (path.startsWith("/production/bom") && userCanViewBom(user)) return true;
+  const module = getModuleForPath(pathname);
+  if (!userCanAccess(user, module)) return false;
+  if (path === "/analytics" || path.startsWith("/analytics/")) {
+    if (!userCanAccessAnalyticsPath(user, path)) return false;
+  }
+  const settingsSection = getSettingsSectionIdFromPath(path);
+  if (settingsSection && !userCanAccessSettingsSection(user, settingsSection)) return false;
+  if (isStoreManager(user) && !storeManagerPathAllowed(pathname)) return false;
+  if (isSalesManager(user) && !salesManagerPathAllowed(pathname)) return false;
+  if (isProductionManager(user) && !productionManagerPathAllowed(pathname)) return false;
+  if (isQualityTeam(user) && !qualityControlPathAllowed(pathname)) return false;
+  if (isOperator(user) && !operatorPathAllowed(pathname)) return false;
+  return true;
+}
+
+export function isOperator(user) {
+  if (!user) return false;
+  return hasRole(user, "Operator");
+}
+
+/** Human-readable label for a module code or granular permission (e.g. production:read). */
+export function permissionLabel(code, modules = []) {
+  const exact = modules.find((m) => m.code === code);
+  if (exact) return exact.label;
+  if (code.includes(":")) {
+    const [module, action] = code.split(":", 2);
+    const moduleEntry = modules.find((m) => m.code === module);
+    const moduleLabel = moduleEntry?.label || module;
+    const actionLabel = action.replace(/_/g, " ");
+    return `${moduleLabel} (${actionLabel})`;
+  }
+  return code.replace(/_/g, " ");
+}
+
+/** Count module-level grants (excludes granular action codes). */
+export function countModulePermissions(permissions = [], modules = []) {
+  const moduleCodes = new Set(modules.map((m) => m.code));
+  return permissions.filter((p) => moduleCodes.has(p)).length;
+}

@@ -1,0 +1,86 @@
+# Bharathi Enterprises ERP — Render Blueprint (template only).
+#
+# Create a NEW Render web service for Bharathi — do not attach this blueprint to Insights IVA.
+# Replace placeholders in the Render dashboard before production traffic.
+#
+# Service name (example): bharathi-enterprises-api
+# Public API URL (example): https://bharathi-enterprises-api.onrender.com
+#
+# Secrets (DATABASE_URL, JWT, S3, SMTP, SMS, OpenAI, Google OAuth) are dashboard-managed only.
+
+services:
+  - type: web
+    name: bharathi-enterprises-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+
+      - key: DATABASE_URL
+        sync: false
+
+      - key: JWT_SECRET_KEY
+        sync: false
+
+      - key: STORAGE_PROVIDER
+        value: s3
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_REGION
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+
+      - key: CORS_ORIGINS
+        value: "https://YOUR_BHARATHI_APP_DOMAIN,https://YOUR_FIREBASE_HOST.web.app,https://YOUR_FIREBASE_HOST.firebaseapp.com"
+
+      - key: AUTH_COOKIE_MODE
+        value: cookie
+      - key: AUTH_COOKIE_SAMESITE
+        value: none
+      - key: AUTH_COOKIE_SECURE
+        value: "true"
+
+      - key: ALLOWED_HOSTS
+        value: "bharathi-enterprises-api.onrender.com,*.onrender.com,YOUR_BHARATHI_APP_DOMAIN"
+
+      - key: FRONTEND_BASE_URL
+        value: "https://YOUR_BHARATHI_APP_DOMAIN"
+
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM_EMAIL
+        sync: false
+
+      - key: RESEND_API_KEY
+        sync: false
+
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: "gpt-4o-mini"
+      - key: OPENAI_TIMEOUT_SECONDS
+        value: "45"
+      - key: AI_ASSISTANT_ENABLED
+        value: "true"
+      - key: AGENT_WRITE_TOOLS_ENABLED
+        value: "false"
+
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_OAUTH_REDIRECT_URI
+        sync: false

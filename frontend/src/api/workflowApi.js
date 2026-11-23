@@ -1,0 +1,131 @@
+import api from "./axiosConfig";
+
+export const createSalesJobCard = (orderId, payload) =>
+  api.post(`/manufacturing/workflow/sales-orders/${orderId}/job-card`, payload);
+
+export const saveSalesJobCard = (orderId, payload) =>
+  api.patch(`/manufacturing/workflow/sales-orders/${orderId}/job-card`, payload);
+
+export const getSalesJobCard = (orderId) =>
+  api.get(`/manufacturing/workflow/sales-orders/${orderId}/job-card`, { skipCache: true });
+
+export const createManualJobCard = (payload) =>
+  api.post("/manufacturing/workflow/job-cards/manual", payload);
+
+export const getManualJobCard = (jobCardId) =>
+  api.get(`/manufacturing/workflow/job-cards/manual/${jobCardId}`);
+
+export const updateManualJobCard = (jobCardId, payload) =>
+  api.patch(`/manufacturing/workflow/job-cards/manual/${jobCardId}`, payload);
+
+export const deleteManualJobCard = (jobCardId) =>
+  api.delete(`/manufacturing/workflow/job-cards/manual/${jobCardId}`);
+
+export const getManualSendRecipientRoles = () =>
+  api.get("/manufacturing/workflow/job-cards/manual/send-recipient-roles");
+
+export const getManualSendRecipientUsers = (role) =>
+  api.get("/manufacturing/workflow/job-cards/manual/send-recipient-users", {
+    params: { role },
+  });
+
+export const sendManualJobCard = (jobCardId, payload) =>
+  api.post(`/manufacturing/workflow/job-cards/manual/${jobCardId}/send`, payload);
+
+export const acknowledgeManualJobCard = (jobCardId) =>
+  api.post(`/manufacturing/workflow/job-cards/manual/${jobCardId}/acknowledge`);
+
+export const returnManualJobCardToSales = (jobCardId, payload = {}) =>
+  api.post(`/manufacturing/workflow/job-cards/manual/${jobCardId}/return-to-sales`, payload);
+
+export const addManualStoreComment = (jobCardId, payload) =>
+  api.post(`/manufacturing/workflow/job-cards/manual/${jobCardId}/store-comments`, payload);
+
+export const getManualMaterialCheck = (jobCardId) =>
+  api.get(`/manufacturing/workflow/job-cards/manual/${jobCardId}/material-check`, { skipCache: true });
+
+export const submitManualMaterialCheck = (jobCardId, payload) =>
+  api.post(`/manufacturing/workflow/job-cards/manual/${jobCardId}/material-check`, payload);
+
+export const getWorkflowJobCards = (params = {}) =>
+  api.get("/manufacturing/workflow/job-cards", { params });
+
+export const getWorkflowContext = (orderId) =>
+  api.get(`/manufacturing/workflow/sales-orders/${orderId}/context`, { skipCache: true });
+
+export const backfillWorkflowStatuses = (dryRun = false) =>
+  api.post("/manufacturing/workflow/backfill", null, { params: { dry_run: dryRun } });
+
+export const getWorkflowHub = () => api.get("/manufacturing/workflow/hub");
+
+export const getOperatorJobs = (params = {}) =>
+  api.get("/manufacturing/workflow/operator/jobs", { params });
+
+export const getWorkflowQueue = (params = {}) =>
+  api.get("/manufacturing/workflow/queue", { params });
+
+/** Role-filtered actionable queue — backend determines visibility (preferred). */
+export const getMyJobCardQueue = (params = {}) => {
+  const safeParams = { ...params };
+  if (safeParams.limit != null && Number(safeParams.limit) > 2000) {
+    safeParams.limit = 2000;
+  }
+  return api.get("/manufacturing/workflow/my-queue", { params: safeParams });
+};
+
+export const getWorkflowRoutingMeta = () =>
+  api.get("/manufacturing/workflow/routing");
+
+export const confirmSalesOrderWorkflow = (orderId) =>
+  api.post(`/manufacturing/workflow/sales-orders/${orderId}/confirm`);
+
+export const getMaterialCheck = (orderId) =>
+  api.get(`/manufacturing/workflow/sales-orders/${orderId}/material-check`, { skipCache: true });
+
+export const submitMaterialCheck = (orderId, payload) =>
+  api.post(`/manufacturing/workflow/sales-orders/${orderId}/material-check`, payload);
+
+export const assignOperator = (workOrderId, payload) =>
+  api.post(`/manufacturing/workflow/production/job-cards/${workOrderId}/assign-operator`, payload);
+
+export const startProduction = (workOrderId) =>
+  api.post(`/manufacturing/workflow/production/job-cards/${workOrderId}/start`);
+
+export const pauseProduction = (workOrderId) =>
+  api.post(`/manufacturing/workflow/production/job-cards/${workOrderId}/pause`);
+
+export const resumeProduction = (workOrderId) =>
+  api.post(`/manufacturing/workflow/production/job-cards/${workOrderId}/resume`);
+
+export const updateProductionProgress = (workOrderId, payload) =>
+  api.patch(`/manufacturing/workflow/production/job-cards/${workOrderId}/progress`, payload);
+
+export const completeProduction = (workOrderId, payload = {}) =>
+  api.post(`/manufacturing/workflow/production/job-cards/${workOrderId}/complete`, payload);
+
+export const submitQualityCheck = (inspectionId, payload) =>
+  api.post(`/manufacturing/workflow/quality/checks/${inspectionId}/approve`, payload);
+
+export const completePacking = (orderId, payload) =>
+  api.post(`/manufacturing/workflow/packing/${orderId}/complete`, payload);
+
+export const getStageJobCard = (orderId, stage, productionOrderId) =>
+  api.get(`/manufacturing/workflow/sales-orders/${orderId}/stage/${stage}`, {
+    skipCache: true,
+    params: productionOrderId ? { production_order_id: productionOrderId } : undefined,
+  });
+
+export const submitStoreIssue = (orderId, payload) =>
+  api.post(`/manufacturing/workflow/sales-orders/${orderId}/store-issue`, payload);
+
+export const holdWorkflowOrder = (orderId, payload = {}) =>
+  api.post(`/manufacturing/workflow/sales-orders/${orderId}/hold`, payload);
+
+export const raiseMaterialRequest = (orderId, payload = {}) =>
+  api.post(`/manufacturing/workflow/sales-orders/${orderId}/material-request`, payload);
+
+export const getWorkflowLiveCards = (params = {}) =>
+  api.get("/manufacturing/workflow/live", { params });
+
+export const createBillingInvoice = (orderId, payload = {}) =>
+  api.post("/manufacturing/workflow/billing/invoices", payload, { params: { order_id: orderId } });

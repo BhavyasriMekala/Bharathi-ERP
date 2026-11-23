@@ -1,0 +1,77 @@
+/**
+ * Unified job card navigation helpers.
+ */
+
+/** Manual Sales Job Card create form. */
+export function jobCardCreateUrl() {
+  return "/sales/job-cards/create";
+}
+
+/** Manual Sales Job Card edit form. */
+export function jobCardManualEditUrl(jobCardId) {
+  if (!jobCardId) return jobCardCreateUrl();
+  return `/sales/job-cards/${jobCardId}/edit`;
+}
+
+/** Read-only manual Sales Job Card view. */
+export function jobCardManualViewUrl(jobCardId) {
+  if (!jobCardId) return "/my-job-cards?dept=sales";
+  return `/sales/job-cards/${jobCardId}`;
+}
+
+/** Full-page sales job card (JobCardDetailsShell + Sales Job Card document). */
+export function jobCardDetailsUrl(orderId) {
+  if (!orderId) return jobCardCreateUrl();
+  return `/job-cards/${orderId}`;
+}
+
+/** Production Planning row → production-stage job card for its sales order. */
+export function productionStageJobCardUrl(orderId) {
+  if (!orderId) return null;
+  return `/manufacturing/workflow/order/${orderId}/production`;
+}
+
+/**
+ * Inline view on My Job Cards — keeps dept/filters in the query string.
+ * Example: /my-job-cards?dept=sales&order=42
+ */
+export function myJobCardsViewUrl(orderId, searchParams) {
+  if (!orderId) return "/my-job-cards";
+  const params = new URLSearchParams(
+    searchParams instanceof URLSearchParams ? searchParams : searchParams || undefined
+  );
+  params.set("order", String(orderId));
+  params.delete("jc");
+  const search = params.toString();
+  return search ? `/my-job-cards?${search}` : `/my-job-cards?order=${orderId}`;
+}
+
+/** View manual job card — dedicated view page (sales list no longer uses inline ?jc=). */
+export function myJobCardsManualViewUrl(jobCardId, searchParams) {
+  return jobCardManualViewUrl(jobCardId);
+}
+
+/** Sales job card edit page (same UI, edit mode). */
+export function jobCardEditUrl(orderId) {
+  if (!orderId) return jobCardCreateUrl();
+  return `/sales/orders/${orderId}/job-card`;
+}
+
+/** Operator / work-order row → stage job card when linked via WorkflowStageJobCard.work_order_id. */
+export function operatorJobCardUrl(row) {
+  if (!row?.job_card_number) return null;
+  const soId = row?.sales_order_id;
+  if (!soId) return null;
+  if (row.job_card_stage) {
+    return `/manufacturing/workflow/order/${soId}/${row.job_card_stage}`;
+  }
+  return `/sales/orders/${soId}/job-card`;
+}
+
+/** Open job card from a production planning row (uses linked sales order when available). */
+export function productionOrderJobCardUrl(row) {
+  if (row?.sales_order_id) {
+    return jobCardDetailsUrl(row.sales_order_id);
+  }
+  return null;
+}

@@ -1,0 +1,277 @@
+import allowlist from "./operatorPageAllowlist.json";
+
+/** Production Manager sidebar sections (used when filtering generic nav; dedicated nav uses productionManagerNavConfig). */
+export const PRODUCTION_MANAGER_ALLOWED_SECTIONS = new Set([
+  "dashboard",
+  "production",
+  "productionTools",
+  "materials",
+  "masters",
+  "quality",
+  "maintenance",
+  "alerts",
+  "documents",
+  "meetings",
+  "chat",
+  "analytics",
+  "settings",
+]);
+
+/** Paths Production Manager may open (nav + deep links). */
+export const PRODUCTION_MANAGER_ALLOWED_CHILDREN = new Set([
+  "/production",
+  "/production/dashboard",
+  "/production/planning",
+  "/production/work-orders",
+  "/production/schedule",
+  "/production/reports",
+  "/my-job-cards",
+  "/masters/bom",
+  "/production/bom",
+  "/production/bom/new",
+
+  "/inventory/raw-materials",
+  "/inventory/finished-goods",
+  "/inventory/stock-transfer",
+  "/inventory/pending-inventory-checks",
+  "/inventory/material-requests",
+  "/inventory/issue-materials",
+  "/inventory/stock-return",
+  "/procurement/material-requests",
+
+  "/quality",
+  "/quality/in-process",
+  "/quality/final",
+  "/quality/batch-reports",
+  "/quality/defects",
+  "/quality/inspection",
+  "/inventory/items/create",
+  "/hr/attendance",
+
+  "/maintenance",
+  "/maintenance/equipment",
+  "/maintenance/preventive",
+  "/maintenance/breakdowns",
+  "/maintenance/machine-history",
+  "/maintenance/schedule",
+
+  "/alerts",
+  "/alerts/low-stock",
+  "/alerts/machine-failure",
+  "/alerts/production-delay",
+  "/alerts/maintenance",
+  "/alerts/quality",
+
+  "/documents",
+  "/meetings",
+  "/chat",
+  "/analytics/production",
+  "/settings",
+]);
+
+/** Operator may only open production execution paths (no management/admin). */
+/** Operator-facing production shortcuts; management pages remain manager-only. */
+export const OPERATOR_ALLOWED_CHILDREN = new Set([
+  "/production/my-machine",
+]);
+
+export const OPERATOR_BLOCKED_CHILDREN = new Set([
+  "/production/planning",
+  "/production/schedule",
+  "/production/reports",
+]);
+
+export const OPERATOR_ALLOWED_PATHS = new Set(allowlist.exact || []);
+
+/** HR Manager sidebar — HR module plus shared collaboration sections. */
+export const HR_MANAGER_ALLOWED_SECTIONS = new Set([
+  "dashboard",
+  "hr",
+  "documents",
+  "alerts",
+  "analytics",
+  "meetings",
+  "chat",
+  "settings",
+]);
+
+/** Accountant sidebar — Finance/Accounting, Masters, Documents, General Alerts, Finance Analytics. */
+export const ACCOUNTANT_ALLOWED_SECTIONS = new Set([
+  "dashboard",
+  "myJobCards",
+  "finance",
+  "masters",
+  "production",
+  "documents",
+  "alerts",
+  "analytics",
+  "chat",
+  "settings",
+]);
+
+export const ACCOUNTANT_ALLOWED_CHILDREN = new Set([
+  "/accounts/settings",
+  "/my-job-cards",
+  "/alerts",
+  "/alerts/general",
+  "/analytics",
+  "/analytics/finance",
+  "/analytics/executive",
+  "/hr/attendance",
+  "/hr/attendance/approval",
+  "/hr/attendance/overtime",
+  "/hr/attendance/adjusted-leave",
+  "/hr/attendance/settings",
+  "/attendance",
+  "/hr/leave",
+  "/hr/leave/approvals",
+  "/admin/approvals",
+  "/hr/leave/holiday",
+  "/hr/leave/adjustment",
+  "/hr/leave/plans",
+  "/hr/leave/plans/create",
+  "/hr/leave/create",
+  "/leave",
+  "/production/bom",
+  "/settings/opening-balances",
+]);
+
+/** Accountant may open Executive + Finance KPI only (not Live / Production / Inventory / Sales). */
+export function accountantAnalyticsPathAllowed(pathname) {
+  if (!pathname) return false;
+  const path = pathname.replace(/\/$/, "") || "/";
+  if (path === "/analytics" || path === "/analytics/executive") return true;
+  if (path.startsWith("/analytics/executive/")) return true;
+  if (path === "/analytics/finance" || path.startsWith("/analytics/finance/")) return true;
+  return false;
+}
+
+/** Sidebar sections hidden for Operator regardless of module grant. */
+export const OPERATOR_BLOCKED_SECTIONS = new Set([
+  "masters",
+  "inventory",
+  "procurement",
+  "sales",
+  "finance",
+  "quality",
+  "maintenance",
+  "analytics",
+  "admin",
+  "meetings",
+]);
+
+export function productionManagerPathAllowed(pathname) {
+  if (!pathname) return false;
+  const path = pathname.replace(/\/$/, "") || "/";
+  if (path === "/") return true;
+  if (path === "/production" || path === "/production/dashboard") return true;
+  if (PRODUCTION_MANAGER_ALLOWED_CHILDREN.has(path)) return true;
+  if (path.startsWith("/my-job-cards/") || path.startsWith("/job-cards/")) return true;
+  if (path.startsWith("/production/")) return true;
+  if (path.startsWith("/inventory/raw-materials")) return true;
+  if (path.startsWith("/inventory/finished-goods")) return true;
+  if (path.startsWith("/inventory/stock-transfer")) return true;
+  if (path.startsWith("/inventory/pending-inventory-checks")) return true;
+  if (path.startsWith("/inventory/material-requests")) return true;
+  if (path.startsWith("/inventory/issue-materials")) return true;
+  if (path.startsWith("/inventory/stock-return")) return true;
+  if (path.startsWith("/procurement/material-requests")) return true;
+  if (path === "/inventory/items/create" || path.startsWith("/inventory/items/")) return true;
+  if (path.startsWith("/quality")) {
+    if (path === "/quality/incoming" || path.startsWith("/quality/incoming/")) return false;
+    return true;
+  }
+  if (path.startsWith("/hr/attendance")) return true;
+  if (path.startsWith("/maintenance/")) return true;
+  if (path.startsWith("/alerts/")) {
+    return (
+      path === "/alerts" ||
+      path === "/alerts/low-stock" ||
+      path === "/alerts/machine-failure" ||
+      path === "/alerts/production-delay" ||
+      path === "/alerts/maintenance" ||
+      path === "/alerts/quality"
+    );
+  }
+  if (path.startsWith("/documents")) return true;
+  if (path.startsWith("/meetings")) return true;
+  if (path.startsWith("/chat")) return true;
+  if (path === "/analytics/production" || path.startsWith("/analytics/production/")) return true;
+  if (path.startsWith("/manufacturing/workflow")) return true;
+  if (path === "/settings" || path.startsWith("/settings/")) return true;
+  return false;
+}
+
+/** Paths Quality Control may open (nav + job-card workflow deep links). */
+export const QUALITY_CONTROL_ALLOWED_CHILDREN = new Set([
+  "/dashboard",
+  "/quality",
+  "/quality/incoming",
+  "/quality/in-process",
+  "/quality/final",
+  "/quality/batch-reports",
+  "/quality/inspection",
+  "/quality/defects",
+  "/production/planning",
+  "/inventory/raw-materials",
+  "/inventory/finished-goods",
+  "/inventory/settings",
+  "/alerts",
+  "/alerts/quality",
+  "/alerts/production-delay",
+  "/alerts/low-stock",
+  "/documents",
+  "/meetings",
+  "/chat",
+  "/analytics/production",
+  "/my-job-cards",
+]);
+
+export function qualityControlPathAllowed(pathname) {
+  if (!pathname) return false;
+  const path = pathname.replace(/\/$/, "") || "/";
+  if (path === "/" || path === "/dashboard") return true;
+  if (QUALITY_CONTROL_ALLOWED_CHILDREN.has(path)) return true;
+  if (path.startsWith("/my-job-cards/") || path.startsWith("/job-cards/")) return true;
+  if (path.startsWith("/quality/")) {
+    return (
+      path === "/quality" ||
+      path.startsWith("/quality/incoming") ||
+      path.startsWith("/quality/in-process") ||
+      path.startsWith("/quality/final") ||
+      path.startsWith("/quality/batch-reports") ||
+      path.startsWith("/quality/inspection") ||
+      path.startsWith("/quality/defects")
+    );
+  }
+  if (path.startsWith("/production/planning")) return true;
+  if (path.startsWith("/inventory/raw-materials")) return true;
+  if (path.startsWith("/inventory/finished-goods")) return true;
+  if (path === "/inventory/settings" || path.startsWith("/inventory/settings/")) return true;
+  if (path.startsWith("/alerts/")) {
+    return (
+      path === "/alerts" ||
+      path === "/alerts/quality" ||
+      path === "/alerts/production-delay" ||
+      path === "/alerts/low-stock"
+    );
+  }
+  if (path.startsWith("/documents")) return true;
+  if (path.startsWith("/meetings")) return true;
+  if (path.startsWith("/chat")) return true;
+  if (path === "/analytics/production" || path.startsWith("/analytics/production/")) return true;
+  if (path.startsWith("/manufacturing/workflow")) return true;
+  if (path.startsWith("/settings/")) return true;
+  return false;
+}
+
+const OPERATOR_STAGE_PATTERNS = (allowlist.patterns || []).map((pattern) => new RegExp(pattern));
+
+/** Strict Operator page allowlist. The path list is operatorPageAllowlist.json. */
+export function operatorPathAllowed(pathname) {
+  if (!pathname) return false;
+  const path = pathname.replace(/\/$/, "") || "/";
+  if ((allowlist.exact || []).includes(path)) return true;
+  if ((allowlist.prefixes || []).some((prefix) => path.startsWith(prefix))) return true;
+  return OPERATOR_STAGE_PATTERNS.some((pattern) => pattern.test(path));
+}

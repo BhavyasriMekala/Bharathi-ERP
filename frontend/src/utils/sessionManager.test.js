@@ -1,0 +1,132 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { markBrowserSessionActive } from "./authSession";
+import {
+  PRIMARY_SESSION_TIMEOUT_MS,
+  NEW_TAB_TIMEOUT_MS,
+  HEARTBEAT_WINDOW_MS,
+  getTabId,
+  getTabType,
+  markAsPrimaryTab,
+  initTabSession,
+  isPrimaryTabAlive,
+  checkSessionStatus,
+  markTabExpired,
+  clearTabSession,
+  sendPrimaryHeartbeat,
+  recordSessionActivity,
+} from "./sessionManager";
+
+describe("sessionManager", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+    window.name = "";
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("identifies a tab without primary registration as new_tab", () => {
+    expect(getTabType()).toBe("new_tab");
+  });
+
+  it("marks tab as primary and sets up 9-hour session", () => {
+    markAsPrimaryTab();
+    expect(getTabType()).toBe("primary");
+    expect(localStorage.getItem("smrt-login-time")).toBeTruthy();
+    expect(localStorage.getItem("smrt-primary-window-name")).toBe(window.name);
+  });
+
+  it("detects 9-hour expiration on primary tab", () => {
+    markBrowserSessionActive();
+    markAsPrimaryTab();
+
+    // Just after login
+    expect(checkSessionStatus().expired).toBe(false);
+
+    // 8 hours later
+    vi.advanceTimersByTime(8 * 60 * 60 * 1000);
+    expect(checkSessionStatus().expired).toBe(false);
+
+    // After 9 hours
+    vi.advanceTimersByTime(1 * 60 * 60 * 1000 + 1000);
+    const status = checkSessionStatus();
+    expect(status.expired).toBe(true);
+    expect(status.reason).toBe("primary_9hr_timeout");
+  });
+
+  it("keeps new tab valid while primary tab heartbeat is active", () => {
+    markBrowserSessionActive();
+    markAsPrimaryTab();
+
+    sessionStorage.clear();
+    markBrowserSessionActive();
+    initTabSession();
+
+    vi.advanceTimersByTime(NEW_TAB_TIMEOUT_MS + 5000);
+    sendPrimaryHeartbeat();
+    expect(checkSessionStatus().expired).toBe(false);
+  });
+
+  it("expires new tab after 10 minutes when primary tab is closed", () => {
+    markBrowserSessionActive();
+    initTabSession();
+
+    expect(getTabType()).toBe("new_tab");
+    expect(checkSessionStatus().expired).toBe(false);
+
+    vi.advanceTimersByTime(NEW_TAB_TIMEOUT_MS + 1000);
+    const status = checkSessionStatus();
+    expect(status.expired).toBe(true);
+    expect(status.reason).toBe("new_tab_10min_timeout");
+  });
+
+  it("tracks primary tab heartbeat correctly", () => {
+    expect(isPrimaryTabAlive()).toBe(false);
+
+    sendPrimaryHeartbeat();
+    expect(isPrimaryTabAlive()).toBe(true);
+
+    vi.advanceTimersByTime(HEARTBEAT_WINDOW_MS + 1000);
+    expect(isPrimaryTabAlive()).toBe(false);
+  });
+
+  it("marks a specific tab as expired", () => {
+    markBrowserSessionActive();
+    markTabExpired("new_tab_10min_timeout");
+    const status = checkSessionStatus();
+    expect(status.expired).toBe(true);
+    expect(status.reason).toBe("new_tab_10min_timeout");
+  });
+
+  it("recordSessionActivity refreshes primary heartbeat", () => {
+    markBrowserSessionActive();
+    markAsPrimaryTab();
+    vi.advanceTimersByTime(HEARTBEAT_WINDOW_MS + 1000);
+    expect(isPrimaryTabAlive()).toBe(false);
+    recordSessionActivity();
+    expect(isPrimaryTabAlive()).toBe(true);
+  });
+
+  it("promotes a new tab to primary upon login", () => {
+    markBrowserSessionActive();
+    initTabSession();
+    expect(getTabType()).toBe("new_tab");
+
+    // User logs in on this tab
+    markAsPrimaryTab();
+    expect(getTabType()).toBe("primary");
+    expect(sessionStorage.getItem("smrt-new-tab-opened-at")).toBeNull();
+  });
+
+  it("clears primary session keys on logout cleanup", () => {
+    markAsPrimaryTab();
+    localStorage.setItem("smrt-login-time", "1");
+    clearTabSession();
+    expect(localStorage.getItem("smrt-primary-tab-id")).toBeNull();
+    expect(localStorage.getItem("smrt-login-time")).toBeNull();
+    expect(sessionStorage.getItem("smrt-tab-id")).toBeNull();
+  });
+});

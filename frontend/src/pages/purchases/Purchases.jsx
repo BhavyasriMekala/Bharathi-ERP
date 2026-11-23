@@ -1,0 +1,529 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import usePageRefresh from "../../hooks/usePageRefresh";
+import { Link, useNavigate } from "react-router-dom";
+import {
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  Edit2,
+  Eye,
+  Filter,
+  ListFilter,
+  Plus,
+  Search,
+  ShoppingCart,
+  Trash2,
+} from "lucide-react";
+
+import Loader from "../../components/common/Loader";
+import { SearchBar } from "../../components/common/SearchFilter";
+import Button from "../../components/common/Button";
+import EmptyState from "../../components/common/EmptyState";
+import RowActionMenu from "../../components/common/RowActionMenu";
+import { SerialNumberCell, SerialNumberHeader } from "../../components/common/SerialNumberCell";
+import { useToast } from "../../context/ToastContext";
+import { deleteBizDocument, listBizDocuments } from "../../api/bizDocumentsApi";
+import { apiErrorMessage } from "../../utils/apiError";
+import { formatInr } from "../../data/salesMasterData";
+import ConfirmDialog from "../../components/admin/ConfirmDialog";
+
+const PAGE_BG = "var(--color-bg)";
+const PAGE_SIZES = [10, 25, 50];
+
+const SORT_OPTIONS = [
+  { id: "date_desc", label: "Date (Latest First)" },
+  { id: "date_asc", label: "Date (Oldest First)" },
+  { id: "amount_desc", label: "Amount (High to Low)" },
+  { id: "amount_asc", label: "Amount (Low to High)" },
+];
+
+function fmtDate(iso) {
+  if (!iso) return "—";
+  const [y, m, d] = String(iso).slice(0, 10).split("-");
+  if (!y || !m || !d) return String(iso).slice(0, 10);
+  return `${d}/${m}/${y}`;
+}
+
+function displayDate(iso) {
+  if (!iso) return "";
+  const [year, month, day] = iso.split("-");
+  return `${day}-${month}-${year}`;
+}
+
+function hasDocument(row) {
+  const meta = row.meta || {};
+  return Boolean(
+    row.has_document ||
+      meta.has_document ||
+      meta.document_uploaded ||
+      meta.attachment_name ||
+      meta.attachment_url
+  );
+}
+
+function Chip({ label, active, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center rounded-full px-3.5 py-1.5 text-[13px] font-medium transition ${
+        active
+          ? "border border-[var(--color-success)] bg-[var(--color-success-soft)] text-[var(--color-success)]"
+          : "bg-[var(--color-surface-muted)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+export default function Purchases() {
+  const navigate = useNavigate();
+  const { addToast } = useToast();
+  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState([]);
+  const [openMenu, setOpenMenu] = useState(null);
+  const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("2026-04-01");
+  const [dateTo, setDateTo] = useState("2027-03-31");
+  const dateFromRef = useRef(null);
+  const dateToRef = useRef(null);
+  const [showFilters, setShowFilters] = useState(false);
+  const [showSort, setShowSort] = useState(false);
+  const [sortId, setSortId] = useState("date_desc");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [draftDocUpload, setDraftDocUpload] = useState("all");
+  const [docUpload, setDocUpload] = useState("all");
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
+  const load = useCallback(async (isRefresh = false) => {
+    if (!isRefresh) setLoading(true);
+    try {
+      const res = await listBizDocuments({
+        module: "purchases",
+        doc_type: "purchase",
+        page: 1,
+        page_size: 100,
+      });
+      const items = res?.data?.items || res?.data || [];
+      setRows(Array.isArray(items) ? items : []);
+
+
+    } catch {
+      addToast("Failed to load purchases", "error");
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [addToast]);
+
+  usePageRefresh(() => load(true));
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const confirmDelete = async () => {
+    if (!deleteTarget?.id || deleteBusy) return;
+    setDeleteBusy(true);
+    try {
+      await deleteBizDocument(deleteTarget.id);
+      addToast("Purchase deleted", "success");
+      setDeleteTarget(null);
+      await load();
+    } catch (err) {
+      addToast(apiErrorMessage(err, "Failed to delete purchase"), "error");
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, docUpload, sortId, pageSize, dateFrom, dateTo]);
+
+  const filteredSorted = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let list = rows.filter((r) => {
+      const issue = String(r.document_date || "").slice(0, 10);
+      if (dateFrom && issue && issue < dateFrom) return false;
+      if (dateTo && issue && issue > dateTo) return false;
+
+      if (q) {
+        const hay = `${r.document_number || ""} ${r.party_name || ""} ${r.status || ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+
+      if (docUpload === "uploaded" && !hasDocument(r)) return false;
+      if (docUpload === "not_uploaded" && hasDocument(r)) return false;
+      return true;
+    });
+
+    list = [...list].sort((a, b) => {
+      const da = String(a.document_date || "");
+      const db = String(b.document_date || "");
+      const aa = Number(a.amount) || 0;
+      const ab = Number(b.amount) || 0;
+      if (sortId === "date_asc") return da.localeCompare(db);
+      if (sortId === "amount_desc") return ab - aa;
+      if (sortId === "amount_asc") return aa - ab;
+      return db.localeCompare(da);
+    });
+    return list;
+  }, [rows, search, dateFrom, dateTo, docUpload, sortId]);
+
+  const total = filteredSorted.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const pageRows = filteredSorted.slice((page - 1) * pageSize, page * pageSize);
+
+  if (loading) {
+    return (
+      <div className="flex min-h-[50vh] items-center justify-center" style={{ background: PAGE_BG }}>
+        <Loader label="Loading purchases..." />
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-full bg-[#F5F5F5] p-4 sm:p-6">
+      <div className="mb-4 flex w-full flex-wrap items-center justify-end gap-2.5">
+        <div className="relative inline-flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[13px] text-[var(--color-text-secondary)]">
+          <button
+            type="button"
+            onClick={() => dateFromRef.current?.showPicker?.() || dateFromRef.current?.click()}
+            className="flex items-center justify-center text-[#697b78] hover:text-[#1f3935] transition-colors"
+            aria-label="Open start date picker"
+          >
+            <CalendarDays className="h-4 w-4" />
+          </button>
+          <input
+            ref={dateFromRef}
+            type="date"
+            value={dateFrom}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="sr-only"
+            aria-hidden="true"
+            tabIndex={-1}
+            style={{ position: "absolute", width: 1, height: 1, minHeight: 0, padding: 0, margin: -1, overflow: "hidden", clip: "rect(0,0,0,0)", border: 0, opacity: 0, pointerEvents: "none" }}
+          />
+          <button
+            type="button"
+            onClick={() => dateFromRef.current?.showPicker?.() || dateFromRef.current?.click()}
+            className="font-medium text-[#1f3935] hover:text-black transition-colors cursor-pointer"
+            title="Change start date"
+          >
+            {displayDate(dateFrom)}
+          </button>
+          <span className="text-[#697b78] select-none font-medium px-0.5">→</span>
+          <button
+            type="button"
+            onClick={() => dateToRef.current?.showPicker?.() || dateToRef.current?.click()}
+            className="font-medium text-[#1f3935] hover:text-black transition-colors cursor-pointer"
+            title="Change end date"
+          >
+            {displayDate(dateTo)}
+          </button>
+          <input
+            ref={dateToRef}
+            type="date"
+            value={dateTo}
+            onChange={(e) => setDateTo(e.target.value)}
+            className="sr-only"
+            aria-hidden="true"
+            tabIndex={-1}
+            style={{ position: "absolute", width: 1, height: 1, minHeight: 0, padding: 0, margin: -1, overflow: "hidden", clip: "rect(0,0,0,0)", border: 0, opacity: 0, pointerEvents: "none" }}
+          />
+          <button
+            type="button"
+            onClick={() => dateToRef.current?.showPicker?.() || dateToRef.current?.click()}
+            className="flex items-center justify-center text-[#697b78] hover:text-[#1f3935] transition-colors"
+            aria-label="Open end date picker"
+          >
+            <CalendarDays className="h-4 w-4" />
+          </button>
+        </div>
+        <Button
+          variant="add"
+          to="/purchases/create"
+          leftIcon={<Plus className="h-4 w-4" strokeWidth={2.5} aria-hidden />}
+        >
+          Create Purchase
+        </Button>
+      </div>
+
+      <div className="rounded-t-2xl border border-[var(--color-border)] border-b-0 bg-[var(--color-surface)] px-4 pb-6 pt-4 sm:px-6">
+        <div className="mb-3 flex flex-col gap-3 border-b border-[var(--color-border)] pb-3 sm:flex-row sm:items-center sm:justify-between">
+          <SearchBar
+            value={search}
+            onChange={setSearch}
+            placeholder="Search"
+            className="w-full"
+            inputClassName="pending-inventory-search-input"
+          />
+          <div className="relative flex gap-2">
+            <div className="relative">
+              <button
+                type="button"
+                aria-expanded={showFilters}
+                onClick={() => {
+                  setDraftDocUpload(docUpload);
+                  setShowFilters((open) => !open);
+                  setShowSort(false);
+                }}
+                className="inline-flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-muted)] px-3.5 py-2 text-[13px] font-medium text-[var(--color-text-secondary)]"
+              >
+                <Filter className="h-4 w-4" /> Filters
+              </button>
+              {showFilters ? (
+                <>
+                  <button
+                    type="button"
+                    className="fixed inset-0 z-10 cursor-default"
+                    aria-label="Close filters"
+                    onClick={() => setShowFilters(false)}
+                  />
+                  <div className="absolute right-0 z-20 mt-1.5 w-[min(20rem,calc(100vw-2rem))] rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-lg">
+                    <p className="mb-3 text-[12px] font-medium text-[var(--color-text-faint)]">Document uploaded</p>
+                    <div className="flex flex-wrap gap-2">
+                      {[
+                        { id: "all", label: "All" },
+                        { id: "uploaded", label: "Uploaded" },
+                        { id: "not_uploaded", label: "Not uploaded" },
+                      ].map((opt) => (
+                        <Chip
+                          key={opt.id}
+                          label={opt.label}
+                          active={draftDocUpload === opt.id}
+                          onClick={() => setDraftDocUpload(opt.id)}
+                        />
+                      ))}
+                    </div>
+                    <div className="mt-4 flex justify-between gap-2 border-t border-[var(--color-border)] pt-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDraftDocUpload("all");
+                          setDocUpload("all");
+                          setShowFilters(false);
+                        }}
+                        className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-surface-muted)] px-3 py-2 text-[13px] font-semibold"
+                      >
+                        Clear
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDocUpload(draftDocUpload);
+                          setShowFilters(false);
+                        }}
+                        className="rounded-lg px-3 py-2 text-[13px] font-semibold text-white"
+                        style={{ background: "#036f71" }}
+                      >
+                        Apply
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : null}
+            </div>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSort((v) => !v);
+                  setShowFilters(false);
+                }}
+                className="inline-flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-muted)] px-3.5 py-2 text-[13px] font-medium text-[var(--color-text-secondary)]"
+              >
+                <ListFilter className="h-4 w-4" /> Sort by
+              </button>
+              {showSort ? (
+                <>
+                  <button
+                    type="button"
+                    className="fixed inset-0 z-10 cursor-default"
+                    aria-label="Close sort"
+                    onClick={() => setShowSort(false)}
+                  />
+                  <div className="absolute right-0 z-20 mt-1.5 w-[260px] overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] py-1 shadow-lg">
+                    {SORT_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => {
+                          setSortId(opt.id);
+                          setShowSort(false);
+                        }}
+                        className={`block w-full border-b border-[#f0f0f3] px-4 py-2.5 text-left text-[13px] last:border-b-0 hover:bg-[var(--color-surface-hover)] ${
+                          sortId === opt.id ? "font-semibold" : "text-[var(--color-text-secondary)]"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="overflow-hidden rounded-xl border border-[var(--color-border)]">
+          <div className="overflow-x-auto">
+            <table className="min-w-full border-collapse text-left text-[13px]">
+              <thead className="ui-table-head">
+                <tr>
+                  <SerialNumberHeader className="border-b border-r border-[var(--color-table-border)]" />
+                  {[
+                    "Purchase Invoice No.",
+                    "Date",
+                    "Seller Name",
+                    "Amount",
+                    "Status",
+                    "Actions",
+                  ].map((h) => (
+                    <th
+                      key={h}
+                      className="border-b border-r border-[var(--color-table-border)] px-4 py-3 last:border-r-0"
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {pageRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="border-none p-0">
+                      <EmptyState
+                        icon="document"
+                        title="No records found."
+                        description="There is nothing to show here yet."
+                        className="border-none bg-transparent py-12"
+                      />
+                    </td>
+                  </tr>
+                ) : (
+                  pageRows.map((r, rowIndex) => (
+                    <tr key={r.id} className="hover:bg-[var(--color-table-row-hover)]">
+                      <SerialNumberCell
+                        rowIndex={rowIndex}
+                        page={page}
+                        pageSize={pageSize}
+                        className="border-t border-r border-[var(--color-table-border)]"
+                      />
+                      <td className="border-t border-r border-[var(--color-table-border)] px-4 py-3 font-semibold text-[var(--color-success)]">
+                        {r.document_number}
+                      </td>
+                      <td className="border-t border-r border-[var(--color-table-border)] px-4 py-3 text-[var(--color-text-secondary)]">
+                        {fmtDate(r.document_date)}
+                      </td>
+                      <td className="border-t border-r border-[var(--color-table-border)] px-4 py-3">
+                        {r.party_name || "—"}
+                      </td>
+                      <td className="border-t border-r border-[var(--color-table-border)] px-4 py-3 tabular-nums font-medium">
+                        {formatInr(r.amount)}
+                      </td>
+                      <td className="border-t border-r border-[var(--color-table-border)] px-4 py-3 capitalize text-[var(--color-text-secondary)]">
+                        {r.status || "—"}
+                      </td>
+                      <td className="border-t border-[var(--color-table-border)] px-4 py-2" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-end">
+                          <RowActionMenu
+                            rowId={r.id}
+                            openMenu={openMenu}
+                            setOpenMenu={setOpenMenu}
+                            items={[
+                              {
+                                label: "View / Print",
+                                icon: <Eye className="h-4 w-4" />,
+                                onClick: () => navigate(`/purchases/${r.id}`),
+                              },
+                              {
+                                label: "Edit",
+                                icon: <Edit2 className="h-4 w-4" />,
+                                onClick: () => navigate(`/purchases/${r.id}/edit`),
+                              },
+                              { divider: true },
+                              {
+                                label: "Delete",
+                                icon: <Trash2 className="h-4 w-4" />,
+                                danger: true,
+                                onClick: () => setDeleteTarget(r),
+                              },
+                            ]}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="mt-4 ui-pagination justify-between border-t border-[var(--color-border-soft)] pt-4">
+          <div className="flex items-center gap-2.5 flex-nowrap whitespace-nowrap text-[13px] text-[var(--color-text-muted)]">
+            <span>Rows per page:</span>
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value))}
+              className="ui-pagination-select"
+            >
+              {PAGE_SIZES.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+            <span>
+              {total === 0
+                ? "0–0 of 0"
+                : `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}`}
+            </span>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className="ui-page-btn"
+              aria-label="Previous page"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              className="ui-page-btn ui-page-btn--active"
+            >
+              {page}
+            </button>
+            <button
+              type="button"
+              disabled={page >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              className="ui-page-btn"
+              aria-label="Next page"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="Delete purchase"
+        message={`Delete purchase ${deleteTarget?.document_number}? This cannot be undone.`}
+        loading={deleteBusy}
+        onConfirm={confirmDelete}
+        onClose={() => {
+          if (!deleteBusy) setDeleteTarget(null);
+        }}
+      />
+    </div>
+  );
+}

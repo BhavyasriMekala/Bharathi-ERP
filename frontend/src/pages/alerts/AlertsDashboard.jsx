@@ -1,0 +1,1221 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
+import { useLocation, useNavigate } from "react-router-dom";
+import { AlertTriangle, Bell, CheckCircle2, Eye, Filter, ShieldAlert, Trash2, X, Plus, Calendar, Save, Tag } from "lucide-react";
+import ExportDownloadMenu from "../../components/common/ExportDownloadMenu";
+import { ListPageCard, ListPageCardBody, ListPageShell } from "../../components/common/ListPageShell";
+import KpiCard from "../../components/common/KpiCard";
+import PageHeader from "../../components/common/PageHeader";
+
+import SkeletonTable from "../../components/common/SkeletonTable";
+import EmptyState from "../../components/common/EmptyState";
+import { ErrorState, NoResultsState, OfflineState } from "../../components/common/states";
+import { useNetworkStatus } from "../../context/NetworkStatusContext";
+import { useToast } from "../../context/ToastContext";
+import useAuth from "../../hooks/useAuth";
+import usePageRefresh from "../../hooks/usePageRefresh";
+import {
+  acknowledgeAlert,
+  createAlert,
+  deleteAlert,
+  getAlerts,
+  getAllAlertPages,
+  markAlertRead,
+  markAllAlertsRead,
+  resolveAlert,
+} from "../../api/alertsApi";
+import ConfirmDialog from "../../components/admin/ConfirmDialog";
+import InventoryPlanningShell from "../../components/inventory/InventoryPlanningShell";
+import { getTeamDirectory } from "../../api/adminApi";
+import { isAdmin, isOperator, userCanAction } from "../../config/permissions";
+import { exportToExcel, exportToPdf } from "../../utils/exportUtils";
+import Button from "../../components/common/Button";
+import { SearchBar } from "../../components/common/SearchFilter";
+import RowActionMenu from "../../components/common/RowActionMenu";
+import { SerialNumberCell, SerialNumberHeader } from "../../components/common/SerialNumberCell";
+import "../../styles/alerts-grid-table.css";
+import {
+  SEVERITY_OPTIONS,
+  MODULE_OPTIONS,
+  SEVERITY_STYLES,
+  STATUS_STYLES,
+  moduleLabel,
+  formatAlertDate,
+  computeAlertSummary,
+} from "../../utils/alertUtils";
+import {
+  SALES_ALERT_CATEGORIES,
+  salesAlertCategory,
+  salesAlertCustomer,
+  salesAlertOrderNumber,
+  salesAlertSummary,
+} from "../../utils/salesAlertCategories";
+
+const PAGE_SIZE = 10;
+
+const ALERT_FILTER_EMPTY = {
+  search: "",
+  severity: "",
+  module: "",
+  dateFrom: "",
+  dateTo: "",
+  assignedUser: "",
+};
+
+const STATUS_TABS = [
+  { value: "", label: "All" },
+  { value: "active", label: "Active" },
+  { value: "acknowledged", label: "Acknowledged" },
+  { value: "resolved", label: "Resolved" },
+];
+
+const EXPORT_COLUMNS = [
+  { key: "id", label: "Alert ID" },
+  { key: "title", label: "Title" },
+  { key: "message", label: "Description" },
+  { key: "module", label: "Module" },
+  { key: "severity", label: "Severity" },
+  { key: "status", label: "Status" },
+  { key: "assigned_to", label: "Assigned To" },
+  { key: "created_by", label: "Created By" },
+  { key: "created_date", label: "Created Date" },
+  { key: "acknowledged_by", label: "Acknowledged By" },
+  { key: "acknowledged_date", label: "Acknowledged Date" },
+];
+
+
+function Badge({ value, styles }) {
+  const key = String(value || "").toLowerCase();
+  return (
+    <span
+      className={`alerts-page-badge alerts-page-badge--${key || "unknown"} inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-bold tracking-wide border ${
+        styles[key] || "bg-[var(--color-surface-muted)] text-[var(--color-text-secondary)] border-[var(--color-border-soft)]"
+      }`}
+    >
+      {value || "—"}
+    </span>
+  );
+}
+
+function getNowLocalISO() {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hours = String(d.getHours()).padStart(2, "0");
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function isMatchingAlertType(alertType, targetType) {
+  if (!targetType) return true;
+  if (!alertType) return false;
+  const a = String(alertType).toLowerCase();
+  const t = String(targetType).toLowerCase();
+  if (a === t) return true;
+
+  if (t === "low_stock" && (a === "inventory" || a === "stock")) return true;
+  if (t === "machine_failure" && (a === "machine" || a === "equipment")) return true;
+  if (t === "production_delay" && a === "production") return true;
+  if (t === "maintenance" && (a === "maintenance_reminder" || a === "maint")) return true;
+
+  return false;
+}
+
+function normalizeAlert(a) {
+  return {
+    ...a,
+    module: moduleLabel(a.alert_type),
+    assigned_to: a.assigned_to || "—",
+    created_by: a.created_by || "System",
+    created_date: formatAlertDate(a.triggered_at || a.created_at),
+    acknowledged_by: a.acknowledged_by || (a.acknowledged_at ? "System" : "—"),
+    acknowledged_date: formatAlertDate(a.acknowledged_at),
+  };
+}
+
+export default function AlertsDashboard({ initialAlertType = null, title, subtitle, topContent = null, salesManager = false, shellClassName = "", planningTheme = "" }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { user } = useAuth();
+  const { addToast } = useToast();
+  const { online, markRequestStart, markRequestEnd, registerRetry } = useNetworkStatus();
+  const admin = isAdmin(user);
+  const operator = isOperator(user);
+  const showActionsColumn = !operator;
+  const canWrite = userCanAction(user, "alerts", "update");
+  const canCreate = userCanAction(user, "alerts", "create");
+  const searchParams = new URLSearchParams(location.search);
+  const reportMachineId = initialAlertType === "machine_failure" ? searchParams.get("machine") || "" : "";
+  const reportMachineName = searchParams.get("machine_name") || (reportMachineId ? `Machine #${reportMachineId}` : "");
+  const canReportMachineIssue = Boolean(reportMachineId && isOperator(user));
+  const canCreateAlert = canCreate || canReportMachineIssue;
+  const isLowStockAlertsPage = initialAlertType === "low_stock";
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [rows, setRows] = useState([]);
+  const [assignees, setAssignees] = useState([]);
+
+  const [status, setStatus] = useState("");
+  const [category, setCategory] = useState("");
+  const [unreadOnly, setUnreadOnly] = useState(false);
+  const [resolveTarget, setResolveTarget] = useState(null);
+  const [draftFilters, setDraftFilters] = useState(() => ({
+    ...ALERT_FILTER_EMPTY,
+    module: initialAlertType || "",
+  }));
+  const [appliedFilters, setAppliedFilters] = useState(() => ({
+    ...ALERT_FILTER_EMPTY,
+    module: initialAlertType || "",
+  }));
+  const [showFilters, setShowFilters] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState(null);
+  const [sortKey, setSortKey] = useState("triggered_at");
+  const [sortDir, setSortDir] = useState("desc");
+  const [page, setPage] = useState(1);
+  const [viewRow, setViewRow] = useState(null);
+  const [showCreate, setShowCreate] = useState(Boolean(reportMachineId));
+  const [busyId, setBusyId] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  // Form state
+  const [form, setForm] = useState(() => ({
+    title: reportMachineId ? `Machine issue — ${reportMachineName}` : "",
+    message: "",
+    alert_type: initialAlertType || "general",
+    severity: "medium",
+    assigned_to: "",
+    triggered_at: getNowLocalISO(),
+  }));
+
+  const load = useCallback(async (isRefresh = false) => {
+    if (!isRefresh) setLoading(true);
+    setError(null);
+    markRequestStart();
+    try {
+      const params = {};
+      if (initialAlertType) params.alert_type = initialAlertType;
+
+      const results = await Promise.allSettled([
+        salesManager ? getAllAlertPages(params).then((items) => ({ data: items })) : getAlerts(params),
+        ...(operator ? [] : [getTeamDirectory()]),
+      ]);
+      const [alertsRes, usersRes] = results;
+
+
+      let apiAlerts = [];
+      if (alertsRes.status === "fulfilled") {
+        const data = Array.isArray(alertsRes.value?.data)
+          ? alertsRes.value.data
+          : alertsRes.value?.data?.data || [];
+        apiAlerts = data.map(normalizeAlert);
+      } else if (alertsRes.status === "rejected") {
+        setError(
+          alertsRes.reason?.response?.data?.detail ||
+            "Failed to load alerts from the server."
+        );
+        setRows([]);
+      }
+
+      const filteredAlerts = initialAlertType
+        ? apiAlerts.filter((a) => isMatchingAlertType(a.alert_type, initialAlertType))
+        : apiAlerts;
+
+      setRows(filteredAlerts);
+
+      if (!operator && usersRes?.status === "fulfilled") {
+        setAssignees(usersRes.value?.data || []);
+      } else {
+        setAssignees([]);
+      }
+    } catch (e) {
+      setError(e.response?.data?.detail || e.message || "Failed to load alerts");
+      setRows([]);
+    } finally {
+      markRequestEnd();
+      setLoading(false);
+    }
+  }, [initialAlertType, markRequestStart, markRequestEnd, operator, salesManager]);
+
+  usePageRefresh(() => load(true));
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useEffect(() => registerRetry(load), [registerRetry, load]);
+
+  useEffect(() => {
+    if (initialAlertType) {
+      setDraftFilters((f) => ({ ...f, module: initialAlertType }));
+      setAppliedFilters((f) => ({ ...f, module: initialAlertType }));
+    }
+  }, [initialAlertType]);
+
+  const applyAlertFilters = () => {
+    setAppliedFilters({ ...draftFilters });
+    setPage(1);
+  };
+
+  const clearAlertFilters = () => {
+    const cleared = { ...ALERT_FILTER_EMPTY, module: initialAlertType || "" };
+    setDraftFilters(cleared);
+    setAppliedFilters(cleared);
+    setPage(1);
+  };
+
+  const filtered = useMemo(() => {
+    const q = appliedFilters.search.trim().toLowerCase();
+    const { severity, module, dateFrom, dateTo, assignedUser } = appliedFilters;
+    return rows.filter((r) => {
+      if (reportMachineId && String(r.reference_id ?? "") !== String(reportMachineId)) return false;
+      if (initialAlertType && !isMatchingAlertType(r.alert_type, initialAlertType)) {
+        return false;
+      }
+      if (severity && String(r.severity).toLowerCase() !== severity) return false;
+      if (status && String(r.status).toLowerCase() !== status) return false;
+      if (module && !isMatchingAlertType(r.alert_type, module)) {
+        return false;
+      }
+      if (assignedUser && !String(r.assigned_to || "").toLowerCase().includes(assignedUser.toLowerCase())) {
+        return false;
+      }
+      if (dateFrom) {
+        const t = new Date(r.triggered_at || r.created_at).getTime();
+        if (Number.isFinite(t) && t < new Date(dateFrom).getTime()) return false;
+      }
+      if (dateTo) {
+        const t = new Date(r.triggered_at || r.created_at).getTime();
+        if (Number.isFinite(t) && t > new Date(dateTo).getTime()) return false;
+      }
+      if (salesManager && category && salesAlertCategory(r)?.id !== category) return false;
+      if (salesManager && unreadOnly && (r.is_read || String(r.status || "").toLowerCase() !== "active")) return false;
+      if (!q) return true;
+      return [
+        r.id,
+        r.title,
+        r.message,
+        r.alert_type,
+        r.severity,
+        r.status,
+        r.assigned_to,
+        r.created_by,
+        salesAlertOrderNumber(r),
+        salesAlertCustomer(r),
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(q);
+    });
+  }, [rows, appliedFilters, status, initialAlertType, reportMachineId, salesManager, category, unreadOnly]);
+
+  const sorted = useMemo(() => {
+    const list = [...filtered];
+    list.sort((a, b) => {
+      const av = a[sortKey] ?? "";
+      const bv = b[sortKey] ?? "";
+      if (av === bv) {
+        return sortDir === "asc" ? ((a.id || 0) - (b.id || 0)) : ((b.id || 0) - (a.id || 0));
+      }
+      const cmp = av > bv ? 1 : -1;
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return list;
+  }, [filtered, sortKey, sortDir]);
+
+  const summary = useMemo(() => {
+    if (salesManager) return salesAlertSummary(filtered);
+    const base = computeAlertSummary(filtered);
+    base.active = filtered.filter((a) => String(a.status || "").toLowerCase() === "active").length;
+    return base;
+  }, [filtered, salesManager]);
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const pageRows = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  useEffect(() => {
+    setPage(1);
+  }, [appliedFilters, status]);
+
+  const runAction = async (id, action, label) => {
+    setBusyId(id);
+    const userName = user?.full_name || user?.name || user?.email || "HR Manager";
+    const nowLocal = getNowLocalISO();
+
+    try {
+      if (salesManager && (action === "ack" || action === "resolve" || action === "read" || action === "delete")) {
+        if (action === "ack") await acknowledgeAlert(id);
+        if (action === "resolve") await resolveAlert(id);
+        if (action === "read") await markAlertRead(id);
+        if (action === "delete") await deleteAlert(id);
+        if (action === "delete") {
+          setRows((prev) => prev.filter((r) => String(r.id) !== String(id)));
+        } else {
+          setRows((prev) =>
+            prev.map((r) => {
+              if (String(r.id) !== String(id)) return r;
+              if (action === "read") return { ...r, is_read: true };
+              const nextStatus = action === "ack" ? "acknowledged" : "resolved";
+              return {
+                ...r,
+                status: nextStatus,
+                is_read: true,
+                acknowledged_by: userName,
+                acknowledged_at: nowLocal,
+                acknowledged_date: formatAlertDate(nowLocal),
+              };
+            })
+          );
+        }
+        addToast(`${label} successful`, "success");
+        setViewRow(null);
+        setResolveTarget(null);
+        return;
+      }
+      if (action === "ack" || action === "resolve") {
+        const nextStatus = action === "ack" ? "acknowledged" : "resolved";
+        setRows((prev) =>
+          prev.map((r) => {
+            if (String(r.id) === String(id)) {
+              return {
+                ...r,
+                status: nextStatus,
+                acknowledged_by: userName,
+                acknowledged_at: nowLocal,
+                acknowledged_date: formatAlertDate(nowLocal),
+              };
+            }
+            return r;
+          })
+        );
+
+        try {
+          if (action === "ack") await acknowledgeAlert(id);
+          if (action === "resolve") await resolveAlert(id);
+        } catch (apiErr) {
+          console.warn("Backend acknowledge/resolve API notice:", apiErr);
+        }
+      } else if (action === "delete") {
+        try {
+          await deleteAlert(id);
+        } catch (apiErr) {
+          console.warn("Backend delete notice:", apiErr);
+        }
+        setRows((prev) => prev.filter((r) => String(r.id) !== String(id)));
+      }
+
+      addToast(`${label} successful`, "success");
+      setViewRow(null);
+    } catch (e) {
+      addToast(e.response?.data?.detail || `Failed to ${label.toLowerCase()}`, "error");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    if (!form.title) {
+      addToast("Please provide an alert title", "error");
+      return;
+    }
+    setSaving(true);
+    const creator = user?.full_name || user?.name || user?.email || "HR Manager";
+    const triggeredDateStr = form.triggered_at ? `${form.triggered_at}:00` : new Date().toISOString();
+    const payload = {
+      ...form,
+      tenant_id: user?.tenant_id ?? 1,
+      created_by: creator,
+      triggered_at: triggeredDateStr,
+      status: "active",
+      ...(reportMachineId ? {
+        reference_type: "machine",
+        reference_id: Number(reportMachineId),
+        module: "maintenance",
+        target_role: "Operator,Production Manager",
+        link: `${location.pathname}${location.search}`,
+      } : {}),
+    };
+
+    try {
+      const res = await createAlert(payload);
+      const newAlert = normalizeAlert(res.data || { ...payload, id: Date.now() });
+
+      setRows((prev) => [newAlert, ...prev]);
+      addToast("Alert registered successfully", "success");
+      setShowCreate(false);
+      setForm({
+        title: "",
+        message: "",
+        alert_type: initialAlertType || "general",
+        severity: "medium",
+        assigned_to: "",
+        triggered_at: getNowLocalISO(),
+      });
+      await load();
+    } catch (err) {
+      addToast(err?.response?.data?.detail || "Could not create alert.", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const resolvedReportTitle = useMemo(() => {
+    if (title && title !== "All Alerts") {
+      if (title.toLowerCase().includes("report")) return title;
+      return `${title} Report`;
+    }
+    if (appliedFilters.module) {
+      const mod = moduleLabel(appliedFilters.module);
+      return `${mod} Alerts Report`;
+    }
+    return "Alerts Report";
+  }, [title, appliedFilters.module]);
+
+  const resolvedFileSlug = useMemo(() => {
+    if (initialAlertType) return `${initialAlertType}-alerts`;
+    if (appliedFilters.module) return `${appliedFilters.module}-alerts`;
+    return "alerts";
+  }, [initialAlertType, appliedFilters.module]);
+
+  const exportRows = sorted.map((r) => ({
+    ...r,
+    module: r.module,
+    created_date: r.created_date,
+    acknowledged_date: r.acknowledged_date,
+  }));
+
+  const handleExport = async (format) => {
+    try {
+      if (format === "pdf") {
+        await exportToPdf(exportRows, EXPORT_COLUMNS, resolvedReportTitle, resolvedFileSlug);
+      } else {
+        await exportToExcel(exportRows, EXPORT_COLUMNS, resolvedFileSlug);
+      }
+      addToast(format === "pdf" ? "Exported to PDF" : "Exported to Excel", "success");
+    } catch {
+      addToast(`Could not export alerts to ${format === "pdf" ? "PDF" : "Excel"}`, "error");
+    }
+  };
+
+  const alertWords = String(title || "Alerts").trim().split(/\s+/);
+  const wrapPlanning = (node) => {
+    if (!planningTheme) return node;
+    return (
+      <InventoryPlanningShell
+        theme={planningTheme}
+        kicker="Monitor · Acknowledge · Resolve"
+        title={alertWords[0].toUpperCase()}
+        accent={alertWords.slice(1).join(" ").toUpperCase()}
+        subtitle={subtitle || "Monitor, acknowledge, and resolve system alerts across modules."}
+      >
+        {node}
+      </InventoryPlanningShell>
+    );
+  };
+
+  if (loading) {
+    return wrapPlanning(
+      <ListPageShell className={shellClassName}>
+      <div className="alerts-page-loading space-y-5 pb-4">
+        <div className="h-8 w-48 animate-pulse rounded bg-[var(--color-surface-muted)]" />
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="h-24 animate-pulse rounded-2xl bg-[var(--color-surface-muted)]" />
+          ))}
+        </div>
+        <SkeletonTable rows={8} cols={8} />
+      </div>
+      </ListPageShell>
+    );
+  }
+
+  return wrapPlanning(
+    <ListPageShell className={shellClassName}>
+    <div className="alerts-page-body min-w-0 space-y-5 pb-4">
+      {topContent}
+      <PageHeader
+        title={title}
+        showTitle={Boolean(title)}
+        subtitle={subtitle || "Monitor, acknowledge, and resolve system alerts across modules."}
+        action={
+          <div className="flex flex-wrap items-center gap-2">
+            {canWrite && !isLowStockAlertsPage && (
+              <Button
+                variant="secondary"
+                type="button"
+                onClick={async () => {
+                  try {
+                    await markAllAlertsRead();
+                    addToast("All alerts marked as read");
+                    load();
+                  } catch (e) {
+                    addToast(e.response?.data?.detail || "Failed to mark all read", "error");
+                  }
+                }}
+              >
+                Mark all read
+              </Button>
+            )}
+            <ExportDownloadMenu onExport={handleExport} />
+            {canCreateAlert && !reportMachineId && !isLowStockAlertsPage && (
+              <Button variant="add" type="button" onClick={() => setShowCreate(true)} leftIcon={<Plus className="h-4 w-4" strokeWidth={2.5} aria-hidden />}>
+                {canReportMachineIssue ? "Report Machine Issue" : "New Alert"}
+              </Button>
+            )}
+          </div>
+        }
+      />
+
+      {error && !online ? (
+        <OfflineState onRetry={load} />
+      ) : error && rows.length === 0 ? (
+        <ErrorState description={error} onRetry={load} />
+      ) : error ? (
+        <div className="rounded-xl border border-[var(--kpi-warning-soft)] bg-[var(--kpi-warning-soft)]/40 px-4 py-3 text-sm text-[var(--color-text)] print:hidden font-medium" role="alert">
+          {error} Showing cached/local alerts where available.{" "}
+          <button type="button" onClick={load} className="font-semibold underline">
+            Retry
+          </button>
+        </div>
+      ) : null}
+
+      {/* KPI summary */}
+      {salesManager ? (
+      <div className="alerts-page-kpis grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+        <KpiCard className="alerts-page-kpi alerts-page-kpi--total" label="Total Alerts" value={summary.total} icon={Bell} tone="primary" meta="Same rows as the list" onClick={() => { setStatus(""); setCategory(""); setUnreadOnly(false); clearAlertFilters(); }} />
+        <KpiCard className="alerts-page-kpi alerts-page-kpi--unread" label="Unread Alerts" value={summary.unread} icon={Bell} tone="violet" meta="Active and not read" onClick={() => { setStatus("active"); setUnreadOnly(true); setCategory(""); setPage(1); }} />
+        <KpiCard className="alerts-page-kpi alerts-page-kpi--critical" label="Critical Alerts" value={summary.critical} icon={ShieldAlert} tone="danger" meta="Severity is critical" onClick={() => { setUnreadOnly(false); setStatus(""); const next = { ...draftFilters, severity: "critical" }; setDraftFilters(next); setAppliedFilters(next); setPage(1); }} />
+        <KpiCard className="alerts-page-kpi alerts-page-kpi--delay" label="Order Delay Alerts" value={summary.orderDelay} icon={AlertTriangle} tone="warning" meta="Stored order delay alerts" onClick={() => { setUnreadOnly(false); setStatus(""); setCategory("order_delay"); setPage(1); }} />
+        <KpiCard className="alerts-page-kpi alerts-page-kpi--resolved" label="Resolved Alerts" value={summary.resolved} icon={CheckCircle2} tone="success" meta="Status is resolved" onClick={() => { setUnreadOnly(false); setCategory(""); setStatus("resolved"); setPage(1); }} />
+      </div>
+      ) : (
+      <div className="alerts-page-kpis grid grid-cols-2 gap-3 md:grid-cols-4">
+        <KpiCard
+          label="Total Alerts"
+          value={summary.total}
+          icon={Bell}
+          className="alerts-page-kpi alerts-page-kpi--total"
+          tone="primary"
+          onClick={() => {
+            setStatus("");
+            clearAlertFilters();
+          }}
+          meta="Click to show all"
+        />
+        <KpiCard
+          label="Active"
+          value={summary.active}
+          className="alerts-page-kpi alerts-page-kpi--active"
+          icon={AlertTriangle}
+          tone="info"
+          onClick={() => {
+            setStatus("active");
+            setPage(1);
+          }}
+          meta="Needs attention"
+        />
+        <KpiCard
+          label="Critical"
+          value={summary.critical}
+          className="alerts-page-kpi alerts-page-kpi--critical"
+          icon={ShieldAlert}
+          tone="danger"
+          onClick={() => {
+            setStatus("");
+            const next = { ...draftFilters, severity: "critical" };
+            setDraftFilters(next);
+            setAppliedFilters(next);
+            setPage(1);
+          }}
+          meta="Highest priority"
+        />
+        <KpiCard
+          label="Resolved"
+          value={summary.resolved}
+          className="alerts-page-kpi alerts-page-kpi--resolved"
+          icon={CheckCircle2}
+          tone="success"
+          onClick={() => {
+            setStatus("resolved");
+            setPage(1);
+          }}
+          meta="Closed alerts"
+        />
+      </div>
+      )}
+
+      {salesManager ? (
+        <div className="alerts-page-categories flex flex-wrap gap-2" role="group" aria-label="Alert categories">
+          <button type="button" className={`alerts-page-category rounded-full border px-3 py-1 text-xs font-semibold focus-visible:outline focus-visible:outline-2 ${category === "" ? "is-active border-[var(--color-primary)] bg-[var(--color-primary-soft)]" : "border-[var(--color-border-soft)]"}`} onClick={() => { setCategory(""); setPage(1); }}>All categories</button>
+          {SALES_ALERT_CATEGORIES.map((item) => (
+            <button key={item.id} type="button" className={`alerts-page-category rounded-full border px-3 py-1 text-xs font-semibold focus-visible:outline focus-visible:outline-2 ${category === item.id ? "is-active border-[var(--color-primary)] bg-[var(--color-primary-soft)]" : "border-[var(--color-border-soft)]"}`} onClick={() => { setCategory(item.id); setPage(1); }}>
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {/* Search, status tabs & filters */}
+      <ListPageCard className="alerts-page-toolbar print:hidden">
+        <ListPageCardBody>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <SearchBar
+            value={draftFilters.search}
+            onChange={(v) => setDraftFilters((f) => ({ ...f, search: v }))}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                applyAlertFilters();
+              }
+            }}
+            placeholder="Search"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="secondary" onClick={() => setShowFilters((v) => !v)}>
+              <Filter className="h-4 w-4" />
+              Filters
+              {[appliedFilters.severity, appliedFilters.module, appliedFilters.dateFrom, appliedFilters.dateTo, appliedFilters.assignedUser].filter(Boolean).length > 0 ? (
+                <span className="ml-1 rounded-full bg-[var(--color-primary)] px-1.5 py-0.5 text-[10px] font-bold text-white">
+                  {[appliedFilters.severity, appliedFilters.module, appliedFilters.dateFrom, appliedFilters.dateTo, appliedFilters.assignedUser].filter(Boolean).length}
+                </span>
+              ) : null}
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2 border-t border-[var(--color-border-soft)] pt-4">
+          {STATUS_TABS.map((tab) => {
+            const active = status === tab.value;
+            return (
+              <button
+                key={tab.value || "all"}
+                type="button"
+                onClick={() => {
+                  setStatus(tab.value);
+                  setPage(1);
+                }}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  active
+                    ? "bg-[var(--color-primary)] text-white"
+                    : "bg-[var(--color-surface-muted)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
+                }`}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+          <span className="ml-auto self-center text-xs text-[var(--color-text-muted)]">
+            {sorted.length} result{sorted.length === 1 ? "" : "s"}
+          </span>
+        </div>
+
+        {showFilters ? (
+          <div className="mt-4 grid gap-3 border-t border-[var(--color-border-soft)] pt-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+            <div>
+              <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                Severity
+              </label>
+              <select
+                value={draftFilters.severity}
+                onChange={(e) => setDraftFilters((f) => ({ ...f, severity: e.target.value }))}
+                className="ui-select w-full"
+              >
+                {SEVERITY_OPTIONS.map((o) => (
+                  <option key={o.value || "all"} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                Module
+              </label>
+              <select
+                value={draftFilters.module}
+                onChange={(e) => setDraftFilters((f) => ({ ...f, module: e.target.value }))}
+                className="ui-select w-full"
+              >
+                {MODULE_OPTIONS.map((o) => (
+                  <option key={o.value || "all"} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                From date
+              </label>
+              <input
+                type="date"
+                value={draftFilters.dateFrom}
+                onChange={(e) => setDraftFilters((f) => ({ ...f, dateFrom: e.target.value }))}
+                className="ui-input w-full"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                To date
+              </label>
+              <input
+                type="date"
+                value={draftFilters.dateTo}
+                onChange={(e) => setDraftFilters((f) => ({ ...f, dateTo: e.target.value }))}
+                className="ui-input w-full"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                Assigned to
+              </label>
+              <input
+                value={draftFilters.assignedUser}
+                onChange={(e) => setDraftFilters((f) => ({ ...f, assignedUser: e.target.value }))}
+                placeholder="Name…"
+                className="ui-input w-full"
+              />
+            </div>
+            <div className="col-span-full flex flex-wrap justify-end gap-2 border-t border-[var(--color-border-soft)] pt-3">
+              <Button type="button" variant="secondary" size="sm" onClick={clearAlertFilters}>
+                Clear Filters
+              </Button>
+              <Button type="button" variant="primary" size="sm" onClick={applyAlertFilters}>
+                Apply Filters
+              </Button>
+            </div>
+          </div>
+        ) : null}
+        </ListPageCardBody>
+      </ListPageCard>
+
+      <ListPageCard className="alerts-page-table overflow-hidden print:hidden">
+        <ListPageCardBody className="p-0">
+        {pageRows.length === 0 ? (
+          <EmptyState
+            icon="document"
+            title="No records found."
+            description="There is nothing to show here yet."
+            className="border-none bg-transparent py-14"
+          />
+        ) : (
+          <div className="ui-table-wrap ui-table-wrap--scroll w-full max-w-full">
+            <table className={`ui-table alerts-grid-table ${showActionsColumn ? "alerts-grid-table--actions" : ""} ${salesManager ? "alerts-grid-table--sales" : ""} w-full border-collapse text-left text-[13px]`}>
+              <thead className="ui-table-head">
+                <tr className="border-b border-[var(--color-border-soft)]">
+                  <SerialNumberHeader className="px-3 py-3" />
+                  <th className="px-4 py-3">Alert</th>
+                  {salesManager ? <th className="px-4 py-3">Sales order</th> : null}
+                  {salesManager ? <th className="px-4 py-3">Customer</th> : null}
+                  <th className="px-4 py-3">{salesManager ? "Category" : "Module"}</th>
+                  <th className="px-4 py-3">
+                    <button type="button" className="font-semibold" onClick={() => { setSortKey("severity"); setSortDir((dir) => (sortKey === "severity" && dir === "asc" ? "desc" : "asc")); }}>{salesManager ? "Priority" : "Severity"}</button>
+                  </th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="whitespace-nowrap px-4 py-3">Created</th>
+                  {showActionsColumn ? <th className="w-[4.5rem] px-3 py-3 text-right">Actions</th> : null}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--color-border-muted)]">
+                {pageRows.map((row, rowIndex) => {
+                  const isUnread = row.status === "active";
+                  const menuItems = [
+                    {
+                      label: "View details",
+                      icon: <Eye className="h-3.5 w-3.5" />,
+                      onClick: () => setViewRow(row),
+                    },
+                    row.link
+                      ? {
+                          label: "Open linked page",
+                          icon: <Calendar className="h-3.5 w-3.5" />,
+                          onClick: async () => {
+                            if (!row.is_read) {
+                              try {
+                                await markAlertRead(row.id);
+                              } catch {
+                                /* ignore */
+                              }
+                            }
+                            navigate(row.link);
+                          },
+                        }
+                      : null,
+                    canWrite && row.status === "active"
+                      ? {
+                          label: "Acknowledge",
+                          icon: <CheckCircle2 className="h-3.5 w-3.5" />,
+                          onClick: () => runAction(row.id, "ack", "Acknowledge"),
+                        }
+                      : null,
+                    salesManager && canWrite && !row.is_read
+                      ? {
+                          label: "Mark as read",
+                          icon: <Eye className="h-3.5 w-3.5" />,
+                          onClick: () => runAction(row.id, "read", "Mark as read"),
+                        }
+                      : null,
+                    canWrite && row.status !== "resolved"
+                      ? {
+                          label: "Resolve",
+                          icon: <CheckCircle2 className="h-3.5 w-3.5" />,
+                          onClick: () => (salesManager ? setResolveTarget(row) : runAction(row.id, "resolve", "Resolve")),
+                        }
+                      : null,
+                    admin
+                      ? {
+                          label: "Delete",
+                          icon: <Trash2 className="h-3.5 w-3.5" />,
+                          danger: true,
+                          onClick: () => {
+                            if (window.confirm("Delete this alert?")) {
+                              runAction(row.id, "delete", "Delete");
+                            }
+                          },
+                        }
+                      : null,
+                  ].filter(Boolean);
+
+                  return (
+                    <tr
+                      key={row.id}
+                      className={`alerts-page-row alerts-page-row--${String(row.severity || "unknown").toLowerCase()} transition-colors hover:bg-[var(--color-surface-muted)]/60 ${
+                        isUnread ? "is-unread bg-[var(--color-primary-soft)]/20" : ""
+                      }`}
+                    >
+                      <SerialNumberCell rowIndex={rowIndex} page={page} pageSize={PAGE_SIZE} className="px-3 py-3.5" />
+                      <td className="px-4 py-3.5">
+                        <button
+                          type="button"
+                          onClick={() => setViewRow(row)}
+                          className="block max-w-[360px] text-left"
+                        >
+                          <p className="font-semibold text-[var(--color-text)] line-clamp-1">{row.title}</p>
+                          <p className="mt-0.5 text-xs text-[var(--color-text-muted)]">
+                            {row.message || "No description"}
+                          </p>
+                          <p className="mt-1 text-[11px] text-[var(--color-text-muted)]">
+                            #{row.id}
+                            {row.assigned_to && row.assigned_to !== "—" ? ` · ${row.assigned_to}` : ""}
+                          </p>
+                        </button>
+                      </td>
+                      {salesManager ? (
+                        <td className="whitespace-nowrap px-4 py-3.5 text-xs">
+                          {row.reference_type === "sales_order" && row.reference_id ? (
+                            <button type="button" className="font-semibold text-[var(--color-primary)] underline-offset-2 hover:underline" onClick={() => navigate(`/sales/orders/${row.reference_id}`)}>
+                              {salesAlertOrderNumber(row) || "View order"}
+                            </button>
+                          ) : (
+                            salesAlertOrderNumber(row) || "—"
+                          )}
+                        </td>
+                      ) : null}
+                      {salesManager ? <td className="px-4 py-3.5 text-xs">{salesAlertCustomer(row) || "—"}</td> : null}
+                      <td className="whitespace-nowrap px-4 py-3.5">
+                        <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-surface-muted)] px-2 py-0.5 text-xs font-semibold text-[var(--color-text-secondary)]">
+                          <Tag className="h-3 w-3 shrink-0 opacity-60" />
+                          {salesManager ? (salesAlertCategory(row)?.label || row.module) : row.module}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <Badge value={row.severity} styles={SEVERITY_STYLES} />
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <Badge value={row.status} styles={STATUS_STYLES} />
+                        {salesManager ? (
+                          <p className="mt-1 text-[11px] text-[var(--color-text-muted)]">{row.is_read ? "Read" : "Unread"}</p>
+                        ) : null}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3.5 text-xs text-[var(--color-text-secondary)]">
+                        {row.created_date}
+                      </td>
+                      {showActionsColumn ? (
+                        <td className="px-3 py-3.5 text-right">
+                          <RowActionMenu
+                            rowId={row.id}
+                            openMenu={openMenuId}
+                            setOpenMenu={setOpenMenuId}
+                            items={menuItems}
+                          />
+                        </td>
+                      ) : null}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {sorted.length > 0 ? (
+          <div className="alerts-page-pager flex flex-col items-center justify-between gap-3 border-t border-[var(--color-border-soft)] px-4 py-3 sm:flex-row">
+            <p className="text-xs font-medium text-[var(--color-text-muted)]">
+              Showing {(page - 1) * PAGE_SIZE + 1}–
+              {Math.min(page * PAGE_SIZE, sorted.length)} of {sorted.length} alerts
+            </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className="ui-page-btn disabled:opacity-40"
+            >
+              Previous
+            </button>
+            <span className="text-xs font-semibold text-[var(--color-text)]">
+              Page {page} of {totalPages}
+            </span>
+            <button
+              type="button"
+              disabled={page >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              className="ui-page-btn disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+        ) : null}
+        </ListPageCardBody>
+      </ListPageCard>
+
+      {/* View Alert Detail Modal */}
+      {viewRow &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className={`ui-modal-backdrop print:hidden${shellClassName ? " alerts-page-modal" : ""}`}
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) setViewRow(null);
+            }}
+          >
+            <div className="alerts-page-modal__card ui-modal max-w-lg w-full max-h-[90vh] overflow-y-auto" onMouseDown={(e) => e.stopPropagation()}>
+              <div className="flex items-start justify-between border-b border-[var(--color-border-soft)] px-6 py-4">
+                <div className="min-w-0 pr-4">
+                  <h2 className="text-lg font-bold text-[var(--color-text)]">{viewRow.title}</h2>
+                  <p className="mt-0.5 text-xs font-mono text-[var(--color-text-muted)]">Alert #{viewRow.id}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setViewRow(null)}
+                  className="rounded-lg p-2 text-[var(--color-text-muted)] hover:bg-[var(--color-surface-muted)]"
+                  aria-label="Close"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="space-y-4 p-6">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">Description</p>
+                  <p className="mt-2 rounded-xl border border-[var(--color-border-soft)] bg-[var(--color-surface-muted)]/40 p-3 text-sm leading-relaxed text-[var(--color-text)]">
+                    {viewRow.message || "No description provided."}
+                  </p>
+                </div>
+                <dl className="grid grid-cols-2 gap-3 text-sm">
+                  {[
+                    ["Module", viewRow.module],
+                    ["Severity", null, viewRow.severity, SEVERITY_STYLES],
+                    ["Status", null, viewRow.status, STATUS_STYLES],
+                    ["Assigned", viewRow.assigned_to],
+                    ["Created by", viewRow.created_by],
+                    ["Created", viewRow.created_date],
+                    ["Acknowledged by", viewRow.acknowledged_by],
+                    ["Acknowledged", viewRow.acknowledged_date],
+                  ].map(([label, value, badgeVal, styles]) => (
+                    <div key={label} className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-surface-muted)]/30 p-3">
+                      <dt className="text-xs text-[var(--color-text-muted)]">{label}</dt>
+                      <dd className="mt-1 font-semibold text-[var(--color-text)]">
+                        {badgeVal != null ? <Badge value={badgeVal} styles={styles} /> : value || "—"}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+                <div className="flex flex-wrap justify-end gap-2 border-t border-[var(--color-border-soft)] pt-4">
+                  {canWrite && viewRow.status === "active" && (
+                    <Button type="button" variant="secondary" onClick={() => runAction(viewRow.id, "ack", "Acknowledge")}>
+                      Acknowledge
+                    </Button>
+                  )}
+                  {canWrite && viewRow.status !== "resolved" && (
+                    <Button type="button" variant="primary" onClick={() => (salesManager ? setResolveTarget(viewRow) : runAction(viewRow.id, "resolve", "Resolve"))}>
+                      <CheckCircle2 className="h-4 w-4" /> Resolve
+                    </Button>
+                  )}
+                  <Button type="button" variant="cancel" onClick={() => setViewRow(null)}>
+                    Close
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* New Alert Modal Form */}
+      {showCreate &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className={`ui-modal-backdrop print:hidden${shellClassName ? " alerts-page-modal" : ""}`}
+            onMouseDown={(e) => {
+              if (!saving && e.target === e.currentTarget) setShowCreate(false);
+            }}
+          >
+            <form
+              onSubmit={handleCreate}
+              className="ui-modal max-w-lg w-full max-h-[90vh] overflow-y-auto space-y-4"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between border-b border-[var(--color-border-soft)] pb-3">
+                <div>
+                  <h2 className="text-lg font-bold text-[var(--color-text)]">{reportMachineId ? "Report Machine Issue" : "Create New Alert"}</h2>
+                  <p className="text-xs text-[var(--color-text-muted)] mt-0.5">
+                    {reportMachineId
+                      ? "Describe the machine fault. The Production Manager will be notified."
+                      : "Register a system or operational alert across modules."}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowCreate(false)}
+                  className="rounded-lg p-1.5 text-[var(--color-text-muted)] hover:bg-[var(--color-surface-muted)]"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {reportMachineId ? (
+                  <div className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-surface-muted)] px-3 py-2 text-sm">
+                    <span className="font-semibold">Machine:</span> {reportMachineName} <span className="text-[var(--color-text-muted)]">(ID {reportMachineId})</span>
+                  </div>
+                ) : null}
+                <div>
+                  <label className="ui-label">Alert Title *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Critical Safety Equipment Check Required"
+                    value={form.title}
+                    onChange={(e) => setForm({ ...form, title: e.target.value })}
+                    className="ui-input w-full"
+                  />
+                </div>
+
+                <div>
+                  <label className="ui-label">Description / Instructions</label>
+                  <textarea
+                    rows={3}
+                    placeholder={reportMachineId ? "Describe the fault, symptoms, and any immediate safety concerns..." : "Provide detailed description of the alert, location, or recommended action..."}
+                    value={form.message}
+                    onChange={(e) => setForm({ ...form, message: e.target.value })}
+                    className="ui-input w-full min-h-[80px] resize-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="ui-label">Category / Module</label>
+                    <select
+                      value={form.alert_type}
+                      onChange={(e) => setForm({ ...form, alert_type: e.target.value })}
+                      className="ui-select w-full"
+                    >
+                      {MODULE_OPTIONS.filter((o) => o.value).map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="ui-label">Severity Level</label>
+                    <select
+                      value={form.severity}
+                      onChange={(e) => setForm({ ...form, severity: e.target.value })}
+                      className="ui-select w-full"
+                    >
+                      {SEVERITY_OPTIONS.filter((o) => o.value).map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="ui-label">Assigned To</label>
+                    {assignees.length > 0 ? (
+                      <select
+                        value={form.assigned_to}
+                        onChange={(e) => setForm({ ...form, assigned_to: e.target.value })}
+                        className="ui-select w-full"
+                      >
+                        <option value="">-- Select Assigned --</option>
+                        {assignees.map((user) => {
+                          const name = user.full_name || user.name || user.username || `User #${user.id}`;
+                          return (
+                            <option key={user.id} value={name}>
+                              {name} ({user.role || user.role_name || "User"})
+                            </option>
+                          );
+                        })}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        placeholder="Assigned name..."
+                        value={form.assigned_to}
+                        onChange={(e) => setForm({ ...form, assigned_to: e.target.value })}
+                        className="ui-input w-full"
+                      />
+                    )}
+                  </div>
+                  <div>
+                    <label className="ui-label">Triggered Date & Time *</label>
+                    <input
+                      type="datetime-local"
+                      required
+                      value={form.triggered_at}
+                      onChange={(e) => setForm({ ...form, triggered_at: e.target.value })}
+                      className="ui-input w-full"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 border-t border-[var(--color-border-soft)] pt-4">
+                <Button
+                  variant="cancel"
+                  type="button"
+                  onClick={() => setShowCreate(false)}
+                >
+                  Cancel
+                </Button>
+                <Button variant="primary" type="submit" disabled={saving}>
+                  <Save className="h-4 w-4" />
+                  {saving ? "Saving..." : "Create Alert"}
+                </Button>
+              </div>
+            </form>
+          </div>,
+          document.body
+        )}
+      <ConfirmDialog
+        open={Boolean(resolveTarget)}
+        title="Resolve alert"
+        message="Resolving closes this alert. It does not change the sales order."
+        confirmLabel="Resolve"
+        className={shellClassName ? "alerts-page-dialog" : ""}
+        onClose={() => setResolveTarget(null)}
+        onConfirm={() => resolveTarget && runAction(resolveTarget.id, "resolve", "Resolve")}
+        loading={busyId != null}
+      />
+    </div>
+    </ListPageShell>
+  );
+}

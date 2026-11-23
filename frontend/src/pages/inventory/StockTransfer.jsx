@@ -1,0 +1,991 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import {
+  ArrowLeftRight,
+  ArrowRight,
+  Calendar,
+  CheckCircle2,
+  Filter,
+  Plus,
+  Search,
+  Truck,
+  XCircle,
+} from "lucide-react";
+
+import Button from "../../components/common/Button";
+import ExportDownloadMenu from "../../components/common/ExportDownloadMenu";
+import { ListPageCard, ListPageCardBody } from "../../components/common/ListPageShell";
+import InventoryPlanningShell from "../../components/inventory/InventoryPlanningShell";
+import DataTable from "../../components/common/DataTable";
+import EmptyState from "../../components/common/EmptyState";
+import Loader from "../../components/common/Loader";
+import { SearchBar } from "../../components/common/SearchFilter";
+import InventoryHeaderControls from "../../components/inventory/InventoryHeaderControls";
+import StatusBadge from "../../components/common/StatusBadge";
+import ShorthandQuantityInput from "../../components/common/ShorthandQuantityInput";
+import ConfirmDialog from "../../components/admin/ConfirmDialog";
+import InventoryRowActionsMenu from "../../components/inventory/InventoryRowActionsMenu";
+import RecordDetailModal from "../../components/inventory/RecordDetailModal";
+import { useToast } from "../../context/ToastContext";
+import { apiErrorMessage } from "../../utils/apiError";
+import {
+  createStockTransfer,
+  getInventoryDashboard,
+  getStockTransfers,
+  getWarehouses,
+  updateStockTransferStatus,
+} from "../../api/inventoryApi";
+import usePageRefresh from "../../hooks/usePageRefresh";
+import { asArray } from "../../utils/apiError";
+import { todayIso } from "../../utils/dateUtils";
+import { exportToExcel, exportToPdf } from "../../utils/exportUtils";
+
+const STATUS_LABEL = {
+  draft: "Draft",
+  pending: "Pending",
+  pending_approval: "Pending",
+  approved: "Approved",
+  in_transit: "In Transit",
+  completed: "Completed",
+  cancelled: "Cancelled",
+  rejected: "Cancelled",
+};
+
+const STATUS_TONE = {
+  draft: "neutral",
+  pending: "warning",
+  pending_approval: "warning",
+  approved: "info",
+  in_transit: "warning",
+  completed: "success",
+  cancelled: "neutral",
+  rejected: "neutral",
+};
+
+const TRANSFER_EXPORT_COLUMNS = [
+  { key: "transfer_number", label: "Transfer No." },
+  { key: "transfer_date", label: "Date" },
+  { key: "from_warehouse", label: "From Warehouse" },
+  { key: "to_warehouse", label: "To Warehouse" },
+  { key: "item_name", label: "Item" },
+  { key: "quantity", label: "Quantity" },
+  { key: "status", label: "Status" },
+  { key: "expected_date", label: "Expected Date" },
+  { key: "created_by", label: "Created By" },
+];
+
+const STEPS = [
+  { id: 1, label: "Transfer Details" },
+  { id: 2, label: "Select Items" },
+  { id: 3, label: "Review & Confirm" },
+];
+
+const DEFAULT_FILTERS = {
+  status: "",
+};
+
+const emptyForm = {
+  transfer_number: "",
+  transfer_date: todayIso(),
+  reference: "",
+  from_warehouse_id: "",
+  to_warehouse_id: "",
+  expected_date: todayIso(),
+  remarks: "",
+  item_id: "",
+  batch_number: "",
+  quantity: "",
+};
+
+function formatInrAmount(value) {
+  return `₹ ${Number(value || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function formatQty(value) {
+  return Number(value || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatDate(value) {
+  if (!value) return "—";
+  const d = new Date(`${String(value).slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).replace(/ /g, "-");
+}
+
+function warehouseValue(wh) {
+  if (!wh) return 0;
+  return Number(wh.inventory_value ?? wh.stock_value ?? wh.used_capacity ?? 0) || 0;
+}
+
+function findWarehouseIdByName(warehouseList, name) {
+  if (!name) return "";
+  const match = warehouseList.find((w) => w.name === name);
+  return match ? String(match.id) : "";
+}
+
+function findItemIdByName(itemList, name) {
+  if (!name) return "";
+  const match = itemList.find((i) => i.name === name);
+  return match ? String(match.id) : "";
+}
+
+function isPendingTransferStatus(status) {
+  const st = String(status || "").toLowerCase();
+  return st === "pending" || st === "pending_approval" || st === "draft";
+}
+
+export default function StockTransfer() {
+  const { addToast } = useToast();
+  const [searchParams] = useSearchParams();
+  const formRef = useRef(null);
+  const headerDateInputRef = useRef(null);
+  const [loading, setLoading] = useState(true);
+  const [transfers, setTransfers] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
+  const [items, setItems] = useState([]);
+  const [form, setForm] = useState(emptyForm);
+  const [step, setStep] = useState(1);
+  const [submitting, setSubmitting] = useState(false);
+  const [updatingId, setUpdatingId] = useState(null);
+  const [showForm, setShowForm] = useState(() => searchParams.get("new") === "1");
+  const [search, setSearch] = useState("");
+  const initialStatus = useMemo(() => {
+    const s = String(searchParams.get("status") || "").toLowerCase();
+    return s === "pending" ? "pending" : "";
+  }, [searchParams]);
+  const [filters, setFilters] = useState(() => ({
+    status: initialStatus,
+  }));
+  const [appliedFilters, setAppliedFilters] = useState(() => ({
+    status: initialStatus,
+  }));
+  const [showFilters, setShowFilters] = useState(() => Boolean(initialStatus));
+  const [headerDate, setHeaderDate] = useState(() => todayIso());
+  const [headerWarehouse, setHeaderWarehouse] = useState("");
+  const [openMenuId, setOpenMenuId] = useState(null);
+  const [viewTarget, setViewTarget] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [editReplaceId, setEditReplaceId] = useState(null);
+
+  const load = useCallback(async (isRefresh = false) => {
+    if (!isRefresh) setLoading(true);
+    try {
+      const [trRes, whRes, itemsRes] = await Promise.allSettled([
+        getStockTransfers(),
+        getWarehouses(),
+        getInventoryDashboard(),
+      ]);
+      if (trRes.status === "fulfilled") setTransfers(asArray(trRes.value?.data));
+      else setTransfers([]);
+      if (whRes.status === "fulfilled") setWarehouses(asArray(whRes.value?.data));
+      if (itemsRes.status === "fulfilled") setItems(asArray(itemsRes.value?.data));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  usePageRefresh(() => load(true));
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const openForm = useCallback(() => {
+    setShowForm(true);
+    setStep(1);
+    requestAnimationFrame(() => {
+      formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (searchParams.get("new") === "1") {
+      openForm();
+    }
+    const s = String(searchParams.get("status") || "").toLowerCase();
+    if (s === "pending") {
+      setFilters((f) => ({ ...f, status: "pending" }));
+      setAppliedFilters((f) => ({ ...f, status: "pending" }));
+      setShowFilters(true);
+    }
+  }, [searchParams, openForm]);
+
+  useEffect(() => {
+    if (!headerWarehouse && warehouses.length) setHeaderWarehouse(String(warehouses[0].id));
+    if (!form.from_warehouse_id && warehouses.length) {
+      setForm((f) => ({
+        ...f,
+        from_warehouse_id: String(warehouses[0].id),
+        to_warehouse_id: warehouses[1] ? String(warehouses[1].id) : "",
+      }));
+    }
+  }, [warehouses, headerWarehouse, form.from_warehouse_id]);
+
+  const fromWh = warehouses.find((w) => String(w.id) === String(form.from_warehouse_id));
+  const toWh = warehouses.find((w) => String(w.id) === String(form.to_warehouse_id));
+  const selectedItem = items.find((i) => String(i.id) === String(form.item_id));
+
+  const qty = Number(form.quantity) || 0;
+  const unitCost = Number(selectedItem?.unit_cost ?? selectedItem?.average_cost ?? 0) || 0;
+  const lineValue = qty * unitCost;
+
+  const canNextFromDetails =
+    form.from_warehouse_id &&
+    form.to_warehouse_id &&
+    form.from_warehouse_id !== form.to_warehouse_id &&
+    form.transfer_date &&
+    form.expected_date;
+
+  const canNextFromItems = form.item_id && qty > 0;
+
+  const displayTransfers = useMemo(
+    () =>
+      transfers.map((t) => ({
+        ...t,
+        items: 1,
+        expected_date: t.expected_date || t.transfer_date,
+        created_by: t.approved_by || t.created_by || "—",
+        live: true,
+      })),
+    [transfers]
+  );
+
+  const filteredTransfers = useMemo(() => {
+    let rows = displayTransfers;
+    const q = search.trim().toLowerCase();
+    if (q) {
+      rows = rows.filter((r) =>
+        [r.transfer_number, r.from_warehouse, r.to_warehouse, r.item_name].some(
+          (v) => v && String(v).toLowerCase().includes(q)
+        )
+      );
+    }
+    const statusVal = appliedFilters.status;
+    if (statusVal) {
+      rows = rows.filter((r) => {
+        const st = String(r.status || "").toLowerCase();
+        if (statusVal === "pending") return st === "pending" || st === "pending_approval";
+        return st === statusVal;
+      });
+    }
+    return rows;
+  }, [displayTransfers, search, appliedFilters]);
+
+  const handleApplyFilters = () => {
+    setAppliedFilters({ ...filters });
+  };
+
+  const handleClearFilters = () => {
+    setFilters(DEFAULT_FILTERS);
+    setAppliedFilters(DEFAULT_FILTERS);
+  };
+
+  const handleFilterKeyDown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleApplyFilters();
+    }
+  };
+
+  const resetForm = () => {
+    setForm({
+      ...emptyForm,
+      from_warehouse_id: warehouses[0] ? String(warehouses[0].id) : "",
+      to_warehouse_id: warehouses[1] ? String(warehouses[1].id) : "",
+    });
+    setStep(1);
+    setEditReplaceId(null);
+  };
+
+  const requireLiveRow = (row, actionLabel = "This action") => {
+    if (row.live && typeof row.id === "number") return true;
+    addToast(`${actionLabel} is only available for live transfer records.`, "warning");
+    return false;
+  };
+
+  const handleView = (row) => setViewTarget(row);
+
+  const handleEdit = (row) => {
+    if (!requireLiveRow(row, "Edit")) return;
+    const st = String(row.status || "").toLowerCase();
+    if (!isPendingTransferStatus(st)) {
+      addToast("Only pending transfers can be edited. Create a new transfer instead.", "warning");
+      return;
+    }
+    setForm({
+      transfer_number: row.transfer_number || "",
+      transfer_date: row.transfer_date ? String(row.transfer_date).slice(0, 10) : "",
+      reference: "",
+      from_warehouse_id: findWarehouseIdByName(warehouses, row.from_warehouse),
+      to_warehouse_id: findWarehouseIdByName(warehouses, row.to_warehouse),
+      expected_date: row.expected_date ? String(row.expected_date).slice(0, 10) : "",
+      remarks: "",
+      item_id: findItemIdByName(items, row.item_name),
+      batch_number: row.batch_number || "",
+      quantity: row.quantity != null ? String(row.quantity) : "",
+    });
+    setEditReplaceId(row.id);
+    setStep(1);
+    openForm();
+    addToast("Update the transfer details and submit to save changes.", "info");
+  };
+
+  const handleAdd = () => {
+    resetForm();
+    openForm();
+  };
+
+  const handleDeleteRequest = (row) => {
+    if (!requireLiveRow(row, "Delete")) return;
+    const st = String(row.status || "").toLowerCase();
+    if (!isPendingTransferStatus(st)) {
+      addToast("Only pending transfers can be cancelled.", "warning");
+      return;
+    }
+    setDeleteTarget(row);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget?.id) return;
+    setDeleting(true);
+    try {
+      await updateStockTransferStatus(deleteTarget.id, {
+        status: "rejected",
+        approved_by: "Store Manager",
+      });
+      addToast("Transfer cancelled successfully");
+      setDeleteTarget(null);
+      await load(true);
+    } catch {
+      addToast("Could not cancel transfer", "error");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const viewFields = viewTarget
+    ? [
+        { label: "Transfer No.", value: viewTarget.transfer_number },
+        { label: "Date", value: formatDate(viewTarget.transfer_date) },
+        { label: "From Warehouse", value: viewTarget.from_warehouse },
+        { label: "To Warehouse", value: viewTarget.to_warehouse },
+        { label: "Item", value: viewTarget.item_name },
+        { label: "Batch Number", value: viewTarget.batch_number },
+        { label: "Quantity", value: formatQty(viewTarget.quantity) },
+        {
+          label: "Status",
+          value: STATUS_LABEL[String(viewTarget.status || "").toLowerCase()] || viewTarget.status,
+        },
+        { label: "Expected Date", value: formatDate(viewTarget.expected_date) },
+        { label: "Created By", value: viewTarget.created_by || viewTarget.approved_by },
+        { label: "Vehicle", value: viewTarget.vehicle },
+        { label: "Driver", value: viewTarget.driver },
+      ]
+    : [];
+
+  const handleSubmit = async () => {
+    if (form.from_warehouse_id === form.to_warehouse_id) {
+      addToast("From & To warehouses must differ", "error");
+      return;
+    }
+    if (!canNextFromItems) {
+      addToast("Select an item and quantity", "error");
+      return;
+    }
+    setSubmitting(true);
+    const replacingId = editReplaceId;
+    try {
+      const notes = [form.reference ? `Ref: ${form.reference}` : "", form.remarks, form.expected_date ? `Expected: ${form.expected_date}` : ""]
+        .filter(Boolean)
+        .join(" | ");
+      await createStockTransfer({
+        transfer_number: form.transfer_number || null,
+        transfer_date: form.transfer_date || null,
+        from_warehouse_id: Number(form.from_warehouse_id),
+        to_warehouse_id: Number(form.to_warehouse_id),
+        item_id: Number(form.item_id),
+        batch_number: form.batch_number || null,
+        quantity: Number(form.quantity),
+        notes: notes || null,
+      });
+      if (replacingId && typeof replacingId === "number") {
+        try {
+          await updateStockTransferStatus(replacingId, {
+            status: "rejected",
+            approved_by: "Store Manager",
+          });
+        } catch {
+          /* prior pending transfer may remain */
+        }
+      }
+      addToast(replacingId ? "Transfer updated successfully" : "Transfer created — pending approval");
+      resetForm();
+      setShowForm(false);
+      load();
+    } catch (err) {
+      addToast(apiErrorMessage(err, "Transfer failed"), "error");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleStatusChange = async (transferId, newStatus) => {
+    if (typeof transferId !== "number") return;
+    setUpdatingId(transferId);
+    try {
+      await updateStockTransferStatus(transferId, {
+        status: newStatus,
+        approved_by: "Store Manager",
+      });
+      addToast(`Transfer updated to ${STATUS_LABEL[newStatus] || newStatus.replace(/_/g, " ")}`);
+      await load();
+    } catch {
+      addToast("Failed to update status", "error");
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
+  const historyColumns = [
+    {
+      key: "transfer_number",
+      label: "Transfer No.",
+      render: (r) => <span className="font-semibold tabular-nums text-[var(--color-text)]">{r.transfer_number}</span>,
+    },
+    {
+      key: "transfer_date",
+      label: "Date",
+      render: (r) => <span className="whitespace-nowrap text-[12px] text-[var(--color-text-secondary)]">{formatDate(r.transfer_date)}</span>,
+    },
+    {
+      key: "from_warehouse",
+      label: "From Warehouse",
+      render: (r) => <span className="text-[13px] text-[var(--color-text)]">{r.from_warehouse || "—"}</span>,
+    },
+    {
+      key: "to_warehouse",
+      label: "To Warehouse",
+      render: (r) => <span className="text-[13px] text-[var(--color-text)]">{r.to_warehouse || "—"}</span>,
+    },
+    {
+      key: "items",
+      label: "Items",
+      render: (r) => <span className="tabular-nums text-[13px]">{r.items ?? 1}</span>,
+    },
+    {
+      key: "quantity",
+      label: "Quantity",
+      render: (r) => <span className="tabular-nums text-[13px] font-semibold">{formatQty(r.quantity)}</span>,
+    },
+    {
+      key: "status",
+      label: "Status",
+      render: (r) => {
+        const st = String(r.status || "").toLowerCase();
+        return (
+          <StatusBadge tone={STATUS_TONE[st] || "neutral"}>
+            {STATUS_LABEL[st] || String(r.status || "—").replace(/_/g, " ")}
+          </StatusBadge>
+        );
+      },
+    },
+    {
+      key: "expected_date",
+      label: "Expected Date",
+      render: (r) => <span className="whitespace-nowrap text-[12px] text-[var(--color-text-secondary)]">{formatDate(r.expected_date)}</span>,
+    },
+    {
+      key: "created_by",
+      label: "Created By",
+      render: (r) => <span className="text-[13px] text-[var(--color-text-secondary)]">{r.created_by || "—"}</span>,
+    },
+    {
+      key: "actions",
+      label: "Actions",
+      sortable: false,
+      className: "min-w-[8rem] whitespace-nowrap",
+      render: (r) => {
+        const isBusy = updatingId === r.id;
+        const st = String(r.status || "").toLowerCase();
+        return (
+          <div className="flex items-center gap-1 whitespace-nowrap">
+            {r.live && (st === "pending_approval" || st === "pending") ? (
+              <>
+                <Button type="button" variant="success" size="sm" disabled={isBusy} onClick={() => handleStatusChange(r.id, "approved")} title="Approve">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                </Button>
+                <Button type="button" variant="danger" size="sm" disabled={isBusy} onClick={() => handleStatusChange(r.id, "rejected")} title="Reject">
+                  <XCircle className="h-3.5 w-3.5" />
+                </Button>
+              </>
+            ) : null}
+            {r.live && st === "approved" ? (
+              <Button type="button" variant="primary" size="sm" disabled={isBusy} onClick={() => handleStatusChange(r.id, "in_transit")} title="Dispatch">
+                <Truck className="h-3.5 w-3.5" />
+              </Button>
+            ) : null}
+            {r.live && st === "in_transit" ? (
+              <Button type="button" variant="success" size="sm" disabled={isBusy} onClick={() => handleStatusChange(r.id, "completed")} title="Complete">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+              </Button>
+            ) : null}
+            <InventoryRowActionsMenu
+              rowId={r.id}
+              isOpen={openMenuId === r.id}
+              onOpen={setOpenMenuId}
+              onClose={() => setOpenMenuId(null)}
+              onView={() => handleView(r)}
+              onEdit={() => handleEdit(r)}
+              onAdd={handleAdd}
+              onDelete={() => handleDeleteRequest(r)}
+            />
+          </div>
+        );
+      },
+    },
+  ];
+
+  if (loading) {
+    return (
+      <InventoryPlanningShell theme="maroon" kicker="Move · Track · Confirm" title="STOCK" accent="TRANSFER" subtitle="Move stock between warehouses">
+        <Loader label="Loading stock transfers…" />
+      </InventoryPlanningShell>
+    );
+  }
+
+  const exportRows = filteredTransfers.map((r) => {
+    const st = String(r.status || "").toLowerCase();
+    return {
+      transfer_number: r.transfer_number,
+      transfer_date: formatDate(r.transfer_date),
+      from_warehouse: r.from_warehouse || "",
+      to_warehouse: r.to_warehouse || "",
+      item_name: r.item_name || "",
+      quantity: formatQty(r.quantity),
+      status: STATUS_LABEL[st] || String(r.status || "").replace(/_/g, " "),
+      expected_date: formatDate(r.expected_date),
+      created_by: r.created_by || "",
+    };
+  });
+
+  const handleExport = (format) => {
+    if (format === "pdf") {
+      exportToPdf(exportRows, TRANSFER_EXPORT_COLUMNS, "Stock Transfers", "stock-transfers");
+    } else {
+      exportToExcel(exportRows, TRANSFER_EXPORT_COLUMNS, "stock-transfers");
+    }
+    addToast(format === "pdf" ? "Exported to PDF" : "Exported to Excel", "success");
+  };
+
+  return (
+    <InventoryPlanningShell
+      theme="maroon"
+      kicker="Move · Track · Confirm"
+      title="STOCK"
+      accent="TRANSFER"
+      subtitle="Move stock between warehouses"
+      actions={
+        <InventoryHeaderControls
+          dateValue={headerDate}
+          onDateChange={setHeaderDate}
+          warehouseValue={headerWarehouse}
+          onWarehouseChange={setHeaderWarehouse}
+          warehouses={warehouses}
+        />
+      }
+    >
+    <div className="min-w-0 space-y-5 pb-4">
+
+      {showForm ? (
+        <section ref={formRef} className="ui-card scroll-mt-24 p-4 sm:p-5">
+          {/* Stepper */}
+          <div className="mb-5 flex flex-wrap items-center gap-3 border-b border-[var(--color-border-soft)] pb-4">
+            {STEPS.map((s, i) => {
+              const active = step === s.id;
+              const done = step > s.id;
+              return (
+                <div key={s.id} className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${
+                        active || done
+                          ? "bg-[var(--color-success)] text-white"
+                          : "bg-[var(--color-surface-muted)] text-[var(--color-text-muted)]"
+                      }`}
+                    >
+                      {s.id}
+                    </span>
+                    <span className={`text-sm font-semibold ${active ? "text-[var(--color-text)]" : "text-[var(--color-text-muted)]"}`}>
+                      {s.label}
+                    </span>
+                  </div>
+                  {i < STEPS.length - 1 ? <ArrowRight className="h-4 w-4 text-[var(--color-text-muted)]" /> : null}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-[1fr_260px]">
+            <div>
+              {step === 1 ? (
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <label className="text-sm">
+                    <span className="ui-label">Transfer No.</span>
+                    <input value="Auto generated" readOnly className="ui-input bg-[var(--color-surface-muted)] text-[var(--color-text-muted)]" />
+                  </label>
+                  <label className="text-sm">
+                    <span className="ui-label">Transfer Date</span>
+                    <div className="relative flex items-center">
+                      <input
+                        type="date"
+                        value={form.transfer_date || todayIso()}
+                        onChange={(e) => setForm((f) => ({ ...f, transfer_date: e.target.value || todayIso() }))}
+                        className="ui-input pr-9"
+                      />
+                      <Calendar className="pointer-events-none absolute right-2.5 h-4 w-4 text-[var(--color-text-muted)]" />
+                    </div>
+                  </label>
+                  <label className="text-sm">
+                    <span className="ui-label">Reference (Optional)</span>
+                    <input
+                      placeholder="Enter reference"
+                      value={form.reference}
+                      onChange={(e) => setForm((f) => ({ ...f, reference: e.target.value }))}
+                      className="ui-input"
+                    />
+                  </label>
+
+                  <label className="text-sm">
+                    <span className="ui-label">Source Warehouse *</span>
+                    <select
+                      value={form.from_warehouse_id}
+                      onChange={(e) => setForm((f) => ({ ...f, from_warehouse_id: e.target.value }))}
+                      className="ui-select"
+                    >
+                      <option value="">Select source</option>
+                      {warehouses.map((w) => (
+                        <option key={w.id} value={w.id}>{w.name}</option>
+                      ))}
+                      {!warehouses.length ? <option value="main">Main Warehouse</option> : null}
+                    </select>
+                    <span className="mt-1 block text-xs font-medium text-[var(--color-success)]">
+                      Available:{" "}
+                      {fromWh
+                        ? formatInrAmount(warehouseValue(fromWh))
+                        : warehouses.length
+                          ? "—"
+                          : formatInrAmount(2845210)}
+                    </span>
+                  </label>
+
+                  <label className="text-sm">
+                    <span className="ui-label">Destination Warehouse *</span>
+                    <select
+                      value={form.to_warehouse_id}
+                      onChange={(e) => setForm((f) => ({ ...f, to_warehouse_id: e.target.value }))}
+                      className="ui-select"
+                    >
+                      <option value="">Select destination</option>
+                      {warehouses.map((w) => (
+                        <option key={w.id} value={w.id}>{w.name}</option>
+                      ))}
+                      {!warehouses.length ? <option value="unit2">Unit-2 Warehouse</option> : null}
+                    </select>
+                    <span className="mt-1 block text-xs font-medium text-[var(--color-success)]">
+                      Available:{" "}
+                      {toWh
+                        ? formatInrAmount(warehouseValue(toWh))
+                        : warehouses.length
+                          ? "—"
+                          : formatInrAmount(1275430)}
+                    </span>
+                  </label>
+
+                  <label className="text-sm">
+                    <span className="ui-label">Expected Date *</span>
+                    <div className="relative flex items-center">
+                      <input
+                        type="date"
+                        value={form.expected_date || todayIso()}
+                        onChange={(e) => setForm((f) => ({ ...f, expected_date: e.target.value || todayIso() }))}
+                        className="ui-input pr-9"
+                      />
+                      <Calendar className="pointer-events-none absolute right-2.5 h-4 w-4 text-[var(--color-text-muted)]" />
+                    </div>
+                  </label>
+
+                  <label className="text-sm sm:col-span-2 lg:col-span-3">
+                    <span className="ui-label">Remarks</span>
+                    <textarea
+                      value={form.remarks}
+                      maxLength={250}
+                      onChange={(e) => setForm((f) => ({ ...f, remarks: e.target.value }))}
+                      className="ui-input"
+                      rows={3}
+                      placeholder="Add remarks…"
+                    />
+                    <span className="mt-1 block text-right text-[11px] text-[var(--color-text-muted)]">
+                      {form.remarks.length} / 250
+                    </span>
+                  </label>
+                </div>
+              ) : null}
+
+              {step === 2 ? (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="text-sm sm:col-span-2">
+                    <span className="ui-label">Item *</span>
+                    <select
+                      value={form.item_id}
+                      onChange={(e) => setForm((f) => ({ ...f, item_id: e.target.value }))}
+                      className="ui-select"
+                    >
+                      <option value="">Select item</option>
+                      {items.map((i) => (
+                        <option key={i.id} value={i.id}>
+                          {i.sku ? `${i.sku} — ` : ""}{i.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-sm">
+                    <span className="ui-label">Quantity *</span>
+                    <ShorthandQuantityInput
+                      value={form.quantity}
+                      onChange={(val) => setForm((f) => ({ ...f, quantity: val }))}
+                      placeholder="e.g. 500"
+                    />
+                  </label>
+                  <label className="text-sm">
+                    <span className="ui-label">Batch (Optional)</span>
+                    <input
+                      value={form.batch_number}
+                      onChange={(e) => setForm((f) => ({ ...f, batch_number: e.target.value }))}
+                      className="ui-input"
+                    />
+                  </label>
+                  {selectedItem ? (
+                    <p className="sm:col-span-2 text-xs text-[var(--color-text-muted)]">
+                      Available stock:{" "}
+                      <span className="font-semibold text-[var(--color-text)]">
+                        {Number(selectedItem.total_quantity ?? selectedItem.quantity ?? 0).toLocaleString("en-IN")}
+                      </span>
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {step === 3 ? (
+                <div className="rounded-xl border border-[var(--color-border-soft)] bg-[var(--color-surface-muted)]/40 p-4 text-sm">
+                  <h3 className="mb-3 font-semibold text-[var(--color-text)]">Review transfer</h3>
+                  <dl className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <dt className="text-xs text-[var(--color-text-muted)]">From</dt>
+                      <dd className="font-medium">{fromWh?.name || "Main Warehouse"}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-[var(--color-text-muted)]">To</dt>
+                      <dd className="font-medium">{toWh?.name || "Unit-2 Warehouse"}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-[var(--color-text-muted)]">Transfer Date</dt>
+                      <dd className="font-medium">{formatDate(form.transfer_date)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-[var(--color-text-muted)]">Expected Date</dt>
+                      <dd className="font-medium">{formatDate(form.expected_date)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-[var(--color-text-muted)]">Item</dt>
+                      <dd className="font-medium">{selectedItem?.name || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-[var(--color-text-muted)]">Quantity</dt>
+                      <dd className="font-semibold tabular-nums">{formatQty(qty)}</dd>
+                    </div>
+                    {form.reference ? (
+                      <div>
+                        <dt className="text-xs text-[var(--color-text-muted)]">Reference</dt>
+                        <dd className="font-medium">{form.reference}</dd>
+                      </div>
+                    ) : null}
+                    {form.remarks ? (
+                      <div className="sm:col-span-2">
+                        <dt className="text-xs text-[var(--color-text-muted)]">Remarks</dt>
+                        <dd className="font-medium">{form.remarks}</dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                </div>
+              ) : null}
+
+              <div className="mt-5 flex flex-wrap justify-end gap-2">
+                {step > 1 ? (
+                  <Button type="button" variant="secondary" onClick={() => setStep((s) => s - 1)}>
+                    Back
+                  </Button>
+                ) : (
+                  <Button type="button" variant="secondary" onClick={() => { resetForm(); setShowForm(false); }}>
+                    Cancel
+                  </Button>
+                )}
+                {step < 3 ? (
+                  <Button
+                    type="button"
+                    variant="primary"
+                    disabled={step === 1 ? !canNextFromDetails : !canNextFromItems}
+                    onClick={() => setStep((s) => s + 1)}
+                  >
+                    Next: {STEPS[step]?.label} <ArrowRight className="h-4 w-4" />
+                  </Button>
+                ) : (
+                  <Button type="button" variant="primary" loading={submitting} disabled={submitting || !canNextFromItems} onClick={handleSubmit}>
+                    Confirm Transfer
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            <aside className="h-fit rounded-xl border border-[var(--color-success)]/25 bg-[var(--color-success-soft)] p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <ArrowLeftRight className="h-4 w-4 text-[var(--color-success)]" />
+                <h3 className="text-sm font-semibold text-[var(--color-text)]">Transfer Summary</h3>
+              </div>
+              <dl className="space-y-3 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <dt className="text-[var(--color-text-muted)]">Total Items</dt>
+                  <dd className="font-semibold tabular-nums">{form.item_id ? 1 : 0}</dd>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <dt className="text-[var(--color-text-muted)]">Total Quantity</dt>
+                  <dd className="font-semibold tabular-nums">{formatQty(qty)}</dd>
+                </div>
+                <div className="flex items-center justify-between gap-2 border-t border-[var(--color-success)]/20 pt-3">
+                  <dt className="text-[var(--color-text-muted)]">Total Value</dt>
+                  <dd className="font-bold tabular-nums text-[var(--color-text)]">{formatInrAmount(lineValue)}</dd>
+                </div>
+              </dl>
+            </aside>
+          </div>
+        </section>
+      ) : null}
+
+      <ListPageCard>
+        <ListPageCardBody>
+        <div className="mb-4 flex flex-col gap-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-center">
+            <SearchBar
+              value={search}
+              onChange={setSearch}
+              placeholder="Search transfers"
+              className="w-full min-w-[12rem] flex-1 lg:min-w-[16rem]"
+            />
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <ExportDownloadMenu disabled={!exportRows.length} onExport={handleExport} />
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setShowFilters((v) => !v)}
+                className={showFilters ? "!border-[var(--color-primary)] !text-[var(--color-primary)] font-semibold" : ""}
+              >
+                <Filter className="h-4 w-4" /> Filters
+                {Object.values(appliedFilters).filter(Boolean).length > 0 ? (
+                  <span className="ml-1 rounded-full bg-[var(--color-primary)] px-1.5 py-0.2 text-[10px] text-white">
+                    {Object.values(appliedFilters).filter(Boolean).length}
+                  </span>
+                ) : null}
+              </Button>
+            </div>
+            <Button
+              type="button"
+              variant="add"
+              className="shrink-0 lg:ml-auto"
+              onClick={openForm}
+              leftIcon={<Plus className="h-4 w-4" strokeWidth={2.5} aria-hidden />}
+            >
+              New Transfer
+            </Button>
+          </div>
+        </div>
+
+        {showFilters ? (
+          <section
+            aria-label="Filter stock transfers"
+            className="-mx-4 sm:-mx-5 px-4 sm:px-5 mb-4 flex flex-wrap items-center gap-3 border-y border-[var(--color-border-soft)] py-3.5"
+          >
+            <select
+              value={filters.status}
+              onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}
+              onKeyDown={handleFilterKeyDown}
+              className="ui-select !w-auto min-w-[8.5rem]"
+            >
+              <option value="">Status</option>
+              <option value="draft">Draft</option>
+              <option value="pending">Pending</option>
+              <option value="approved">Approved</option>
+              <option value="in_transit">In Transit</option>
+              <option value="completed">Completed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+            <div className="flex items-center gap-2.5">
+              <button
+                type="button"
+                onClick={handleApplyFilters}
+                className="h-10 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-bold px-5 text-xs sm:text-sm transition-all shadow-sm active:scale-95 cursor-pointer whitespace-nowrap text-center justify-center flex items-center"
+              >
+                Apply Filters
+              </button>
+              <button
+                type="button"
+                onClick={handleClearFilters}
+                className="h-10 rounded-2xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-800 font-bold px-5 text-xs sm:text-sm transition-all shadow-sm active:scale-95 cursor-pointer whitespace-nowrap text-center justify-center flex items-center"
+              >
+                Clear
+              </button>
+            </div>
+          </section>
+        ) : null}
+
+        <DataTable
+          columns={historyColumns}
+          data={filteredTransfers}
+          showSearch={false}
+          pageSize={10}
+          wrapClassName="inventory-table-scroll--transfer rounded-lg border border-[var(--color-border-soft)]"
+          emptyState={
+            <EmptyState
+              icon="document"
+              title="No records found."
+              description="There is nothing to show here yet."
+              className="border-none bg-transparent py-12"
+            />
+          }
+        />
+        </ListPageCardBody>
+      </ListPageCard>
+
+      <RecordDetailModal
+        open={Boolean(viewTarget)}
+        title={viewTarget?.transfer_number || "Transfer Details"}
+        subtitle={viewTarget?.item_name}
+        fields={viewFields}
+        onClose={() => setViewTarget(null)}
+      />
+
+      <ConfirmDialog
+        className="inv-plan-dialog mtk-root mtk-theme--maroon"
+        open={Boolean(deleteTarget)}
+        title="Delete record"
+        message="Are you sure you want to delete this record?"
+        confirmLabel="Delete"
+        destructive
+        loading={deleting}
+        onConfirm={handleDeleteConfirm}
+        onClose={() => {
+          if (!deleting) setDeleteTarget(null);
+        }}
+      />
+    </div>
+    </InventoryPlanningShell>
+  );
+}

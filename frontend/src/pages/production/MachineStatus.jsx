@@ -1,0 +1,753 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { Activity, ChevronLeft, ChevronRight, Cpu, FileText, Grid3X3, LayoutList, Plus, Printer, Thermometer, Upload, Wrench, Zap } from "lucide-react";
+
+import DataTable from "../../components/common/DataTable";
+import ExportDownloadMenu from "../../components/common/ExportDownloadMenu";
+import Loader from "../../components/common/Loader";
+import PageHeader from "../../components/common/PageHeader";
+import { ListPageCard, ListPageCardBody, ListPageShell } from "../../components/common/ListPageShell";
+import { PRODUCTION_MANAGER_PAGE_CHROME } from "../../config/productionManagerPageChrome";
+import Button from "../../components/common/Button";
+import { SearchBar } from "../../components/common/SearchFilter";
+import MachineDetailModal from "../../components/production/MachineDetailModal";
+import { useToast } from "../../context/ToastContext";
+import usePageRefresh from "../../hooks/usePageRefresh";
+import useTenantId from "../../hooks/useTenantId";
+import useAuth from "../../hooks/useAuth";
+import { isOperator } from "../../config/permissions";
+import {
+  getMachineDetail,
+  getMachineSummary,
+  getMachines,
+  updateMachineStatus,
+  getProductionOrders,
+} from "../../api/productionApi";
+import {
+  DEPARTMENTS,
+  IMPORT_TEMPLATE_HEADERS,
+  MACHINE_STATUSES,
+  MACHINE_TYPES,
+  PRODUCTION_LINES,
+  SHIFTS,
+  STATUS_COLORS,
+  WORK_CENTERS,
+  computeMachineSummary,
+  enrichApiMachine,
+  normalizeStatus,
+  statusLabel,
+} from "../../data/machinesMasterData";
+import { runListExport } from "../../utils/listExport";
+
+const PAGE_SIZES = [20, 50, 100];
+
+const KPI_COLOR_THEMES = {
+  "bg-[var(--color-text-muted)]": {
+    hoverBorder: "hover:border-slate-500 hover:ring-2 hover:ring-slate-500/20",
+    activeBorder: "border-slate-500 ring-2 ring-slate-500/20 bg-slate-50/30",
+  },
+  "bg-slate-600": {
+    hoverBorder: "hover:border-slate-500 hover:ring-2 hover:ring-slate-500/20",
+    activeBorder: "border-slate-500 ring-2 ring-slate-500/20 bg-slate-50/30",
+  },
+  "bg-green-600": {
+    hoverBorder: "hover:border-green-500 hover:ring-2 hover:ring-green-500/20",
+    activeBorder: "border-green-500 ring-2 ring-green-500/20 bg-green-50/30",
+  },
+  "bg-yellow-500": {
+    hoverBorder: "hover:border-amber-500 hover:ring-2 hover:ring-amber-500/20",
+    activeBorder: "border-amber-500 ring-2 ring-amber-500/20 bg-amber-50/30",
+  },
+  "bg-[var(--color-primary)]": {
+    hoverBorder: "hover:border-blue-600 hover:ring-2 hover:ring-blue-600/20",
+    activeBorder: "border-blue-600 ring-2 ring-blue-600/20 bg-blue-50/30",
+  },
+  "bg-red-600": {
+    hoverBorder: "hover:border-red-500 hover:ring-2 hover:ring-red-500/20",
+    activeBorder: "border-red-500 ring-2 ring-red-500/20 bg-red-50/30",
+  },
+  "bg-[var(--color-text)]": {
+    hoverBorder: "hover:border-slate-600 hover:ring-2 hover:ring-slate-600/20",
+    activeBorder: "border-slate-600 ring-2 ring-slate-600/20 bg-slate-50/30",
+  },
+  "bg-indigo-600": {
+    hoverBorder: "hover:border-indigo-600 hover:ring-2 hover:ring-indigo-600/20",
+    activeBorder: "border-indigo-600 ring-2 ring-indigo-600/20 bg-indigo-50/30",
+  },
+  "bg-teal-600": {
+    hoverBorder: "hover:border-teal-600 hover:ring-2 hover:ring-teal-600/20",
+    activeBorder: "border-teal-600 ring-2 ring-teal-600/20 bg-teal-50/30",
+  },
+};
+
+function SummaryCard({ label, value, icon: Icon, color, sub, onClick, active }) {
+  const theme = KPI_COLOR_THEMES[color] || {
+    hoverBorder: "hover:border-slate-300 hover:ring-2 hover:ring-slate-400/20",
+    activeBorder: "border-slate-400 ring-2 ring-slate-400/20 bg-slate-50/30",
+  };
+
+  return (
+    <div
+      onClick={onClick}
+      className={`group relative flex h-full flex-col justify-between rounded-2xl border bg-white p-3.5 shadow-sm transition-all duration-200 ${
+        active ? `${theme.activeBorder} shadow-sm` : "border-slate-200"
+      } ${
+        onClick ? `cursor-pointer ${theme.hoverBorder} hover:shadow-md hover:-translate-y-0.5` : ""
+      }`}
+    >
+      <div className="flex items-start justify-between gap-1.5 min-h-[38px]">
+        <p className="text-[11px] font-medium leading-tight text-slate-500 transition-colors group-hover:text-slate-700 sm:text-xs min-w-0 pr-0.5 break-words line-clamp-2">
+          {label}
+        </p>
+        {Icon && (
+          <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-transform duration-200 group-hover:scale-110 ${color}`}>
+            <Icon className="h-4 w-4 text-white" />
+          </div>
+        )}
+      </div>
+      <div className="mt-2 pt-0.5">
+        <p className="truncate text-xl font-bold tabular-nums text-slate-900 sm:text-2xl">{value}</p>
+        {sub && <p className="mt-1 text-[10px] text-slate-400">{sub}</p>}
+      </div>
+    </div>
+  );
+}
+
+function StatusBadge({ status, large }) {
+  const s = normalizeStatus(status);
+  const c = STATUS_COLORS[s] || STATUS_COLORS.idle || { dot: "⚫", bg: "bg-slate-200", text: "text-slate-700", border: "border-slate-300", ring: "bg-slate-500" };
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full border font-semibold capitalize ${c.bg || "bg-slate-100"} ${c.text || "text-slate-800"} ${c.border || "border-slate-200"} ${
+      large ? "px-3 py-1 text-sm" : "px-2.5 py-0.5 text-xs"
+    }`}>
+      <span>{c.dot || "⚫"}</span>
+      {statusLabel(s)}
+    </span>
+  );
+}
+
+function MachineCard({ machine, onClick }) {
+  if (!machine) return null;
+  const s = normalizeStatus(machine);
+  const c = STATUS_COLORS[s] || STATUS_COLORS.idle || { dot: "⚫", bg: "bg-slate-200", text: "text-slate-700", border: "border-slate-300", ring: "bg-slate-500" };
+  return (
+    <button
+      type="button"
+      onClick={() => onClick?.(machine)}
+      className="w-full rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5 text-left shadow-sm transition-all hover:border-[var(--color-action-blue)]/40 hover:shadow-md"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="truncate text-base font-bold text-[var(--color-text)]">{machine.name || "Unnamed Machine"}</h3>
+          <p className="text-xs text-[var(--color-text-muted)]">{machine.code || "—"}</p>
+        </div>
+        <StatusBadge status={s} />
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+        <div>
+          <p className="text-[var(--color-text-faint)]">Department</p>
+          <p className="font-medium text-[var(--color-text-secondary)]">{machine.department || "—"}</p>
+        </div>
+        <div>
+          <p className="text-[var(--color-text-faint)]">Line</p>
+          <p className="font-medium text-[var(--color-text-secondary)]">{machine.production_line || "—"}</p>
+        </div>
+        <div>
+          <p className="text-[var(--color-text-faint)]">Operator</p>
+          <p className="font-medium text-[var(--color-text-secondary)] truncate">{machine.assigned_operator || "—"}</p>
+        </div>
+        <div>
+          <p className="text-[var(--color-text-faint)]">Current Job</p>
+          <p className="font-medium text-[var(--color-action-blue)] truncate">{machine.current_work_order || "—"}</p>
+        </div>
+        <div>
+          <p className="text-[var(--color-text-faint)]">Health</p>
+          <p className="font-medium text-[var(--color-text-secondary)]">{machine.health_score != null ? `${machine.health_score}%` : "—"}</p>
+        </div>
+        <div>
+          <p className="text-[var(--color-text-faint)]">Efficiency</p>
+          <p className="font-medium text-[var(--color-text-secondary)]">{machine.efficiency_pct != null ? `${machine.efficiency_pct}%` : "—"}</p>
+        </div>
+        <div>
+          <p className="text-[var(--color-text-faint)]">Today's Output</p>
+          <p className="font-bold text-[var(--color-text)]">{machine.todays_output ?? 0}</p>
+        </div>
+        <div>
+          <p className="text-[var(--color-text-faint)]">Temperature</p>
+          <p className="font-medium text-[var(--color-text-secondary)] flex items-center gap-1">
+            {machine.temperature_c != null ? (
+              <><Thermometer className="h-3 w-3" />{machine.temperature_c}°C</>
+            ) : "—"}
+          </p>
+        </div>
+      </div>
+      <div className="mt-3 flex items-center gap-2 border-t border-[var(--color-border-soft)] pt-3">
+        <div className={`h-2 w-2 rounded-full ${c.ring || "bg-slate-500"} ${s === "running" ? "animate-pulse" : ""}`} />
+        <span className="text-[10px] text-[var(--color-text-muted)]">Last maint: {machine.last_maintenance_date || "—"}</span>
+      </div>
+    </button>
+  );
+}
+
+const defaultFilters = {
+  code: "",
+  name: "",
+  department: "",
+  production_line: "",
+  machine_type: "",
+  status: "",
+  operator: "",
+  shift: "",
+  work_center: "",
+};
+
+export default function MachineStatus() {
+  const tenantId = useTenantId();
+  const navigate = useNavigate();
+  const { addToast } = useToast();
+  const { user } = useAuth();
+  const operatorMode = isOperator(user);
+  const [loading, setLoading] = useState(true);
+  const [machines, setMachines] = useState([]);
+  const [todayOrdersCount, setTodayOrdersCount] = useState(0);
+  const [apiSummary, setApiSummary] = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [filters, setFilters] = useState(defaultFilters);
+  const [appliedFilters, setAppliedFilters] = useState(defaultFilters);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [viewMode, setViewMode] = useState("grid");
+  const [activeKpiCard, setActiveKpiCard] = useState(null);
+
+  const handleKpiCardClick = (kpiKey, statusVal = "") => {
+    if (activeKpiCard === kpiKey) {
+      setActiveKpiCard(null);
+      setFilters((f) => {
+        const next = { ...f, status: "" };
+        setAppliedFilters(next);
+        return next;
+      });
+    } else {
+      setActiveKpiCard(kpiKey);
+      setFilters((f) => {
+        const next = { ...f, status: statusVal };
+        setAppliedFilters(next);
+        return next;
+      });
+    }
+  };
+
+  const handleApplyFilters = useCallback(() => {
+    setAppliedFilters({ ...filters });
+    setPage(1);
+  }, [filters]);
+
+  const handleClearFilters = useCallback(() => {
+    setFilters(defaultFilters);
+    setAppliedFilters(defaultFilters);
+    setActiveKpiCard(null);
+    setPage(1);
+  }, []);
+
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+
+  const loadMachines = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [mRes, sRes, poRes] = await Promise.all([
+        getMachines(),
+        getMachineSummary().catch(() => ({ data: null })),
+        getProductionOrders().catch(() => ({ data: [] })),
+      ]);
+      const apiRows = Array.isArray(mRes?.data) ? mRes.data : [];
+      setMachines(apiRows.map((row, i) => enrichApiMachine(row, i)));
+      setApiSummary(sRes?.data ?? null);
+
+      const orders = Array.isArray(poRes?.data) ? poRes.data : Array.isArray(poRes) ? poRes : [];
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const count = orders.filter((o) => {
+        const dateVal = o.start_date || o.created_at || "";
+        return dateVal.startsWith(todayStr);
+      }).length;
+      setTodayOrdersCount(count);
+    } catch {
+      setMachines([]);
+      setApiSummary(null);
+      setTodayOrdersCount(0);
+      addToast("Failed to load machines", "error");
+    } finally {
+      setLoading(false);
+    }
+  }, [addToast]);
+
+  usePageRefresh(loadMachines);
+
+  useEffect(() => {
+    loadMachines();
+  }, [loadMachines]);
+
+  const openMachine = async (machine) => {
+    setSelected(machine);
+    setDetail(null);
+    if (typeof machine.id === "number") {
+      try {
+        const res = await getMachineDetail(machine.id);
+        setDetail(enrichApiMachine(res.data));
+      } catch {
+        /* use list data */
+      }
+    }
+  };
+
+  const filtered = useMemo(() => {
+    return (machines || []).filter((m) => {
+      if (!m) return false;
+      const mName = String(m.name || "");
+      const mCode = String(m.code || "");
+      if (appliedFilters.name && !mName.toLowerCase().includes(appliedFilters.name.toLowerCase())) return false;
+      if (appliedFilters.code && !mCode.toLowerCase().includes(appliedFilters.code.toLowerCase())) return false;
+      const normSt = normalizeStatus(m);
+      if (appliedFilters.status && normSt !== appliedFilters.status) return false;
+      if (appliedFilters.department && m.department !== appliedFilters.department) return false;
+      if (appliedFilters.production_line && m.production_line !== appliedFilters.production_line) return false;
+      if (appliedFilters.machine_type && m.machine_type !== appliedFilters.machine_type) return false;
+      if (appliedFilters.operator && !String(m.assigned_operator || m.operator_name || "").toLowerCase().includes(appliedFilters.operator.toLowerCase())) return false;
+      if (appliedFilters.shift && (m.current_shift || m.shift) !== appliedFilters.shift) return false;
+      if (appliedFilters.work_center && m.work_center !== appliedFilters.work_center) return false;
+      if (activeKpiCard === "utilization" && (m.efficiency_pct ?? 0) <= 0 && normSt === "offline") return false;
+      if (activeKpiCard === "todays_production" && (m.todays_output ?? 0) <= 0) return false;
+      return true;
+    });
+  }, [machines, appliedFilters, activeKpiCard]);
+
+  const filteredMachines = filtered;
+
+  useEffect(() => {
+    setPage(1);
+  }, [appliedFilters, pageSize]);
+
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
+  const paginatedMachines = useMemo(() => {
+    return filtered.slice((page - 1) * pageSize, page * pageSize);
+  }, [filtered, page, pageSize]);
+  const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const to = Math.min(page * pageSize, total);
+
+  const summary = useMemo(() => {
+    const base = apiSummary && !Object.values(appliedFilters).some(Boolean) && !activeKpiCard
+      ? apiSummary
+      : computeMachineSummary(filtered);
+    return {
+      ...base,
+      todays_production: Math.max(Number(base?.todays_production || 0), todayOrdersCount),
+    };
+  }, [apiSummary, filtered, appliedFilters, activeKpiCard, todayOrdersCount]);
+
+  const exportColumns = [
+    { key: "code", label: "Machine Code" },
+    { key: "name", label: "Machine Name" },
+    { key: "department", label: "Department" },
+    { key: "production_line", label: "Line" },
+    { key: "machine_type", label: "Type" },
+    { key: "assigned_operator", label: "Operator" },
+    { key: "display_status", label: "Status" },
+    { key: "efficiency_pct", label: "Efficiency %" },
+    { key: "todays_output", label: "Today's Output" },
+  ];
+
+  const handleExport = (format) => {
+    const rows = filteredMachines.map((m) => ({ ...m, display_status: normalizeStatus(m) }));
+    runListExport(format, {
+      data: rows,
+      columns: exportColumns,
+      filename: "machines",
+      title: "Machine Master",
+    });
+    addToast(format === "pdf" ? "Exported to PDF" : "Exported to Excel", "success");
+  };
+
+  const handleDownloadTemplate = () => {
+    const header = IMPORT_TEMPLATE_HEADERS.join(",");
+    const blob = new Blob([`${header}\nMCH026,New CNC Unit,CNC,Machining,Line A,WC-01,idle,Ravi Kumar,Shift A,DMG Mori,CNC-126`], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "machines_import_template.csv";
+    a.click();
+    addToast("Template downloaded");
+  };
+
+  const handleStatusChange = async (machine, newStatus, idleReason) => {
+    if (typeof machine.id !== "number") {
+      addToast("Invalid machine record", "error");
+      return;
+    }
+    try {
+      await updateMachineStatus(machine.id, newStatus, idleReason);
+      addToast(`Machine ${newStatus}`);
+      loadMachines();
+      setSelected(null);
+    } catch {
+      addToast("Status update failed", "error");
+    }
+  };
+
+  const hasActiveFilters = Object.values(filters).some(Boolean);
+
+  const columns = [
+    { key: "code", label: "Code" },
+    { key: "name", label: "Machine Name" },
+    { key: "department", label: "Department" },
+    { key: "production_line", label: "Line" },
+    { key: "machine_type", label: "Type" },
+    { key: "assigned_operator", label: "Operator" },
+    {
+      key: "status",
+      label: "Status",
+      render: (r) => <StatusBadge status={normalizeStatus(r)} />,
+    },
+    {
+      key: "efficiency_pct",
+      label: "Efficiency",
+      render: (r) => (r.efficiency_pct != null ? `${r.efficiency_pct}%` : "—"),
+    },
+    {
+      key: "todays_output",
+      label: "Today",
+      render: (r) => r.todays_output ?? 0,
+    },
+    {
+      key: "actions",
+      label: "Actions",
+      sortable: false,
+      render: (r) => (
+        <button type="button" onClick={() => openMachine(r)} className="text-xs font-semibold text-[var(--color-action-blue)] hover:underline">
+          View Dashboard
+        </button>
+      ),
+    },
+  ];
+
+  if (loading) {
+    return <Loader label="Loading machines..." />;
+  }
+
+  return (
+    <ListPageShell plannerChrome={PRODUCTION_MANAGER_PAGE_CHROME.machines}>
+      <PageHeader
+        subtitle="Digital profiles · Live status · OEE · Production integration"
+        action={
+          !operatorMode && (
+            <Button variant="add" to="/production/machines/create" leftIcon={<Plus className="h-4 w-4" strokeWidth={2.5} aria-hidden />}>
+              New Machine
+            </Button>
+          )
+        }
+      />
+
+        <div className="grid gap-3 grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 2xl:grid-cols-8">
+          <SummaryCard
+            label="Total Machines"
+            value={summary?.total_machines ?? 0}
+            icon={Cpu}
+            color="bg-[var(--color-text-muted)]"
+            onClick={() => handleKpiCardClick("total", "")}
+            active={activeKpiCard === "total"}
+          />
+          <SummaryCard
+            label="Running"
+            value={summary?.running ?? 0}
+            icon={Zap}
+            color="bg-green-600"
+            onClick={() => handleKpiCardClick("running", "running")}
+            active={activeKpiCard === "running" || (activeKpiCard === null && filters.status === "running")}
+          />
+          <SummaryCard
+            label="Idle"
+            value={summary?.idle ?? 0}
+            icon={Activity}
+            color="bg-yellow-500"
+            onClick={() => handleKpiCardClick("idle", "idle")}
+            active={activeKpiCard === "idle" || (activeKpiCard === null && filters.status === "idle")}
+          />
+          <SummaryCard
+            label="Maintenance"
+            value={summary?.maintenance ?? 0}
+            icon={Wrench}
+            color="bg-[var(--color-primary)]"
+            onClick={() => handleKpiCardClick("maintenance", "maintenance")}
+            active={activeKpiCard === "maintenance" || (activeKpiCard === null && filters.status === "maintenance")}
+          />
+          <SummaryCard
+            label="Breakdown"
+            value={summary?.breakdown ?? 0}
+            icon={Activity}
+            color="bg-red-600"
+            onClick={() => handleKpiCardClick("breakdown", "breakdown")}
+            active={activeKpiCard === "breakdown" || (activeKpiCard === null && filters.status === "breakdown")}
+          />
+          <SummaryCard
+            label="Offline"
+            value={summary?.offline ?? 0}
+            icon={Cpu}
+            color="bg-[var(--color-text)]"
+            onClick={() => handleKpiCardClick("offline", "offline")}
+            active={activeKpiCard === "offline" || (activeKpiCard === null && filters.status === "offline")}
+          />
+          <SummaryCard
+            label="Utilization"
+            value={`${summary?.utilization_pct ?? 0}%`}
+            icon={Activity}
+            color="bg-indigo-600"
+            onClick={() => handleKpiCardClick("utilization", "")}
+            active={activeKpiCard === "utilization"}
+          />
+          <SummaryCard
+            label="Today's Production"
+            value={summary?.todays_production?.toLocaleString?.() ?? summary?.todays_production ?? 0}
+            icon={FileText}
+            color="bg-teal-600"
+            onClick={() => navigate("/production/planning?preset=today")}
+            active={activeKpiCard === "todays_production"}
+          />
+        </div>
+
+        <ListPageCard>
+          <ListPageCardBody>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2.5">
+            <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-0">
+              <SearchBar
+                value={filters.name}
+                onChange={(val) => {
+                  setFilters((f) => {
+                    const next = { ...f, name: val };
+                    setAppliedFilters(next);
+                    return next;
+                  });
+                }}
+                placeholder="Search"
+                className="w-full sm:w-auto min-w-[180px] max-w-[240px]"
+              />
+              <select
+                value={filters.status}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setFilters((f) => {
+                    const next = { ...f, status: val };
+                    setAppliedFilters(next);
+                    return next;
+                  });
+                  setActiveKpiCard(val || null);
+                }}
+                className="ui-select min-w-[130px] max-w-[170px]"
+              >
+                <option value="">All Status</option>
+                {MACHINE_STATUSES.map((s) => (
+                  <option key={s} value={s}>{statusLabel(s)}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => setShowAdvanced((v) => !v)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-muted)] px-3.5 py-2.5 text-[13px] font-semibold text-[var(--color-text)] hover:bg-[var(--color-surface-hover)]"
+              >
+                {showAdvanced ? "Hide Filters" : "More Filters"}
+              </button>
+              {!operatorMode && (
+                <>
+                  <Button type="button" variant="secondary" onClick={handleDownloadTemplate}>
+                    <Upload className="h-4 w-4" /> Import
+                  </Button>
+                  <ExportDownloadMenu disabled={!filteredMachines.length} onExport={handleExport} />
+                </>
+              )}
+            </div>
+            <div className="flex rounded-lg border border-[var(--color-border)] p-0.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setViewMode("grid")}
+                className={`rounded-md p-2 ${viewMode === "grid" ? "bg-[var(--color-primary)] text-white" : "text-[var(--color-text-muted)]"}`}
+                title="Grid view"
+              >
+                <Grid3X3 className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("list")}
+                className={`rounded-md p-2 ${viewMode === "list" ? "bg-[var(--color-primary)] text-white" : "text-[var(--color-text-muted)]"}`}
+                title="List view"
+              >
+                <LayoutList className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+
+          {showAdvanced && (
+            <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <input
+                placeholder="Machine Code"
+                value={filters.code}
+                onChange={(e) => setFilters((f) => ({ ...f, code: e.target.value }))}
+                onKeyDown={(e) => e.key === "Enter" && handleApplyFilters()}
+                className="ui-input"
+              />
+              <select value={filters.department} onChange={(e) => setFilters((f) => ({ ...f, department: e.target.value }))} className="ui-select">
+                <option value="">All Departments</option>
+                {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+              <select value={filters.production_line} onChange={(e) => setFilters((f) => ({ ...f, production_line: e.target.value }))} className="ui-select">
+                <option value="">All Lines</option>
+                {PRODUCTION_LINES.map((l) => <option key={l} value={l}>{l}</option>)}
+              </select>
+              <select value={filters.machine_type} onChange={(e) => setFilters((f) => ({ ...f, machine_type: e.target.value }))} className="ui-select">
+                <option value="">All Types</option>
+                {MACHINE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+              <input
+                placeholder="Operator"
+                value={filters.operator}
+                onChange={(e) => setFilters((f) => ({ ...f, operator: e.target.value }))}
+                onKeyDown={(e) => e.key === "Enter" && handleApplyFilters()}
+                className="ui-input"
+              />
+              <select value={filters.shift} onChange={(e) => setFilters((f) => ({ ...f, shift: e.target.value }))} className="ui-select">
+                <option value="">All Shifts</option>
+                {SHIFTS.map((s) => {
+                  const id = typeof s === "object" ? s.id : s;
+                  const label = typeof s === "object" ? s.label : s;
+                  return <option key={id} value={id}>{label}</option>;
+                })}
+              </select>
+              <select value={filters.work_center} onChange={(e) => setFilters((f) => ({ ...f, work_center: e.target.value }))} className="ui-select">
+                <option value="">All Work Centers</option>
+                {WORK_CENTERS.map((w) => <option key={w} value={w}>{w}</option>)}
+              </select>
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={handleApplyFilters}
+                  className="flex-1 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-bold px-5 py-2.5 text-sm transition-all shadow-sm active:scale-95 cursor-pointer"
+                >
+                  Apply Filters
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearFilters}
+                  className="rounded-2xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-800 font-bold px-5 py-2.5 text-sm transition-all shadow-sm active:scale-95 cursor-pointer"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          )}
+
+          {filteredMachines.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface-muted)]/60 py-16 text-center">
+              <Cpu className="mx-auto h-12 w-12 text-[var(--color-text-faint)]" />
+              {machines.length === 0 ? (
+                <>
+                  <p className="mt-4 text-sm font-semibold text-[var(--color-text-secondary)]">No machines found.</p>
+                  <p className="mt-1 text-sm text-[var(--color-text-muted)]">Add a machine to get started.</p>
+                  {!operatorMode && (
+                    <Button variant="add" to="/production/machines/create" className="mt-4" leftIcon={<Plus className="h-4 w-4" strokeWidth={2.5} aria-hidden />}>
+                      New Machine
+                    </Button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <p className="mt-4 text-sm font-medium text-[var(--color-text-secondary)]">
+                    {hasActiveFilters ? "No machines match your filters." : "No machines found."}
+                  </p>
+                  {hasActiveFilters && (
+                    <button
+                      type="button"
+                      onClick={() => setFilters(defaultFilters)}
+                      className="mt-2 text-sm font-semibold text-[var(--color-action-blue)] hover:underline"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          ) : viewMode === "list" ? (
+            <>
+              <div className="overflow-hidden rounded-lg border border-[var(--color-border-soft)]">
+                <DataTable columns={columns} data={paginatedMachines} showSearch={false} pagination={false} />
+              </div>
+              <div className="mt-4 ui-pagination justify-between">
+                <div className="flex items-center gap-2.5 flex-nowrap whitespace-nowrap">
+                  <span>Rows per page:</span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => setPageSize(Number(e.target.value))}
+                    className="ui-pagination-select"
+                  >
+                    {PAGE_SIZES.map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                  <span>{total === 0 ? "0-0 of 0" : `${from}-${to} of ${total}`}</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={page <= 1}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    className="ui-page-btn"
+                    aria-label="Previous page"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    className="ui-page-btn ui-page-btn--active"
+                  >
+                    {page}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={page >= totalPages}
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    className="ui-page-btn"
+                    aria-label="Next page"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {paginatedMachines.map((machine) => (
+                <MachineCard key={machine.id} machine={machine} onClick={openMachine} />
+              ))}
+            </div>
+          )}
+        </ListPageCardBody>
+      </ListPageCard>
+
+      {filteredMachines.length > 0 && (
+        <div className="flex flex-wrap gap-2 text-xs text-[var(--color-text-muted)]">
+          <button type="button" onClick={() => handleExport("pdf")} className="inline-flex items-center gap-1 font-semibold text-[var(--color-text-secondary)] hover:text-[var(--color-action-blue)]">
+            <Printer className="h-3 w-3" /> Print Report
+          </button>
+        </div>
+      )}
+
+      {selected && (
+        <MachineDetailModal
+          machine={selected}
+          detail={detail}
+          onClose={() => { setSelected(null); setDetail(null); }}
+          onStatusChange={handleStatusChange}
+          operatorMode={operatorMode}
+        />
+      )}
+    </ListPageShell>
+  );
+}

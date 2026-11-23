@@ -1,0 +1,86 @@
+# ---- Python / backend ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+backend/venv/
+backend/.venv/
+venv/
+.venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+backend/smrt.db
+smrt.db
+
+# ---- Node / frontend ----
+node_modules/
+frontend/node_modules/
+frontend/dist/
+dist/
+.firebase/
+frontend/.firebase/
+.vite/
+*.local
+
+# ---- Environment / secrets ----
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.env
+!*.env.example
+backend/.env
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+!frontend/e2e/.env.e2e.example
+secrets/
+credentials/
+frontend/e2e/.auth/
+frontend/e2e/.env.e2e
+backend/e2e-responsive-qa*.db*
+backend/_probe_reports.db*
+frontend/test-results/
+frontend/playwright-report/
+test-results/
+
+# Generated responsive QA screenshots / outputs (keep local; do not commit)
+docs/responsive-qa/
+
+# Local Firebase tooling backups (keep .firebaserc / firebase.json tracked)
+frontend/.firebaserc.backup
+.firebaserc.backup
+
+# Generated frontend PDF export/report samples in repo root of frontend/
+frontend/*.pdf
+
+# Local dev scratch scripts (may contain test credentials)
+scratch/
+
+# Database backups (local only)
+backend/backups/
+
+# ---- Editor / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+# ---- Build / coverage ----
+coverage/
+htmlcov/
+.coverage
+*.cover
+
+
+/backend/uploads/

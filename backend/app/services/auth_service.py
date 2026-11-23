@@ -1,0 +1,618 @@
+import re
+from datetime import datetime, timedelta, timezone
+
+from fastapi import HTTPException, status
+from jose import JWTError, jwt
+import bcrypt
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, selectinload
+
+from app.core.config import get_settings
+from app.core.rbac_constants import REGISTERABLE_ROLES
+from app.core.seed_roles import seed_roles_for_tenant
+from app.models.role import Role
+from app.models.tenant import Tenant
+from app.models.user import User, user_roles
+
+_settings = get_settings()
+SECRET_KEY = _settings.jwt_secret_key
+ALGORITHM = _settings.jwt_algorithm
+ACCESS_TOKEN_EXPIRE_MINUTES = _settings.access_token_expire_minutes
+
+
+def _slugify(name: str) -> str:
+    s = re.sub(r"[^a-zA-Z0-9]+", "-", name.strip().lower()).strip("-")
+    return s[:80] if s else "tenant"
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(
+            plain.encode("utf-8"),
+            hashed.encode("utf-8") if isinstance(hashed, str) else hashed,
+        )
+    except (ValueError, TypeError):
+        return False
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+import uuid
+
+
+def create_access_token(data: dict) -> str:
+    to_encode = data.copy()
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.setdefault("jti", str(uuid.uuid4()))
+    to_encode.setdefault("iat", int(now.timestamp()))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_access_token(token: str) -> dict | None:
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        return None
+
+
+ROLE_MISMATCH_MESSAGE = (
+    "The selected role does not match your account. Please choose the correct role."
+)
+
+
+def build_access_token_for_user(
+    user: User, *, role_name: str | None = None, session_id: str | None = None
+) -> str:
+    """JWT claims: user_id, company_id, role, subscription_plan, license_status."""
+    roles = list(getattr(user, "roles", None) or [])
+    role = None
+    if role_name:
+        def norm(s: str) -> str:
+            return re.sub(r"[_\s\-]+", "", s.lower())
+        role = next((r for r in roles if norm(r.name) == norm(role_name)), None)
+    if role is None:
+        role = roles[0] if roles else None
+    resolved_role = role.name if role else (role_name or "Operator")
+    company_name = None
+    subscription_plan = None
+    license_status = None
+    tenant = getattr(user, "tenant", None)
+    if tenant is not None:
+        company_name = tenant.name
+        subscription_plan = getattr(tenant, "subscription", None)
+        license_status = getattr(tenant, "license_status", None)
+    claims = {
+        "sub": str(user.id),
+        "user_id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "company_id": user.tenant_id,
+        "tenant_id": user.tenant_id,
+        "company_name": company_name,
+        "role": resolved_role,
+        "role_id": role.id if role else None,
+        "role_name": resolved_role,
+        "subscription_plan": subscription_plan,
+        "license_status": license_status,
+    }
+    if session_id:
+        claims["sid"] = session_id
+    return create_access_token(claims)
+
+
+def assert_user_has_role(user: User, selected_role: str | None = None) -> str:
+    """Ensure the selected login role matches a role assigned to the user, or pick primary role if omitted."""
+    user_roles = [r.name for r in (getattr(user, "roles", None) or [])]
+    if not user_roles:
+        return (selected_role or "").strip() or "Operator"
+    if not selected_role or not selected_role.strip():
+        return user_roles[0]
+    selected = selected_role.strip()
+    if selected in set(user_roles):
+        return selected
+
+    def norm(s: str) -> str:
+        return re.sub(r"[_\s\-]+", "", s.lower())
+
+    for r_name in user_roles:
+        if norm(r_name) == norm(selected):
+            return r_name
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=ROLE_MISMATCH_MESSAGE,
+    )
+
+
+def authenticate_user(db: Session, email: str, password: str) -> User | None:
+    """Legacy helper — returns user only when email+password match."""
+    if not email:
+        return None
+    normalized = email.strip().lower()
+    stmt = (
+        select(User)
+        .where(func.lower(func.trim(User.email)) == normalized)
+        .options(selectinload(User.roles), selectinload(User.tenant))
+    )
+    user = db.scalars(stmt).first()
+    if not user:
+        return None
+    if not verify_password(password, user.hashed_password):
+        return None
+    return user
+
+
+def find_users_by_email(db: Session, email: str) -> list[User]:
+    if not email:
+        return []
+    normalized = email.strip().lower()
+    users = list(
+        db.scalars(
+            select(User)
+            .where(User.email == normalized)
+            .options(selectinload(User.roles), selectinload(User.tenant))
+        ).all()
+    )
+    if users:
+        return users
+    return list(
+        db.scalars(
+            select(User)
+            .where(func.lower(func.trim(User.email)) == normalized)
+            .options(selectinload(User.roles), selectinload(User.tenant))
+        ).all()
+    )
+
+
+def find_user_by_email(db: Session, email: str) -> User | None:
+    users = find_users_by_email(db, email)
+    if not users:
+        return None
+    from app.core.company_email import is_subscription_active
+    for u in users:
+        if u.is_active and u.tenant and is_subscription_active(u.tenant):
+            return u
+    for u in users:
+        if u.is_active:
+            return u
+    return users[0]
+
+
+def login_user(db: Session, email: str, password: str, user: User | None = None) -> User:
+    """
+    Validate credentials. Raises 401 with a generic message for any auth failure
+    so callers cannot distinguish unknown email, wrong password, or inactive account.
+    """
+    from app.core.company_email import MSG_GENERIC_LOGIN_ERROR, is_subscription_active
+    from app.services.security_service import GENERIC_LOGIN_ERROR
+
+    generic = GENERIC_LOGIN_ERROR or MSG_GENERIC_LOGIN_ERROR
+    # Fixed bcrypt hash for timing mitigation when the email is unknown.
+    dummy_hash = "$2b$12$LQv3c1yqBWVHxkd0LHA0COYz6TtxMQJqpNfWXlFbW.6B1Lx3KvQ6e"
+
+    email = (email or "").strip().lower()
+    candidate_users = [user] if user is not None else find_users_by_email(db, email)
+
+    if not candidate_users:
+        verify_password(password, dummy_hash)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=generic)
+
+    # Check candidates for matching password and active account
+    matched_user = None
+    for cand in candidate_users:
+        if verify_password(password, cand.hashed_password):
+            matched_user = cand
+            break
+
+    if not matched_user and user is not None:
+        all_cands = find_users_by_email(db, email)
+        for cand in all_cands:
+            if cand.id != user.id and verify_password(password, cand.hashed_password):
+                matched_user = cand
+                break
+
+    if not matched_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=generic)
+
+    user = matched_user
+
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=generic)
+
+    if not getattr(user, "email_verified", True):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=generic)
+
+    company = user.tenant
+    if company is None or not is_subscription_active(company):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=generic)
+
+    return user
+
+
+def find_user_by_phone(db: Session, phone: str) -> User | None:
+    digits = "".join(c for c in (phone or "") if c.isdigit())
+    if not digits:
+        return None
+    last10 = digits[-10:] if len(digits) >= 10 else digits
+    users = db.scalars(
+        select(User).options(selectinload(User.roles), selectinload(User.tenant))
+    ).all()
+    for u in users:
+        if not u.phone:
+            continue
+        u_digits = "".join(c for c in u.phone if c.isdigit())
+        if u_digits == digits or (len(u_digits) >= 10 and u_digits[-10:] == last10):
+            return u
+    return None
+
+
+def login_user_by_phone(db: Session, phone: str, *, id_token: str | None = None) -> User:
+    from app.utils.firebase_auth import verify_firebase_phone_id_token
+
+    verify_firebase_phone_id_token(id_token or "", phone)
+    from app.core.company_email import (
+        MSG_ACCOUNT_DEACTIVATED,
+        MSG_COMPANY_INACTIVE,
+        MSG_TRIAL_EXPIRED,
+        is_subscription_active,
+    )
+
+    user = find_user_by_phone(db, phone)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No account found registered with this phone number.",
+        )
+
+    company = user.tenant
+    if company is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Company association not found for this account.",
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=MSG_ACCOUNT_DEACTIVATED,
+        )
+
+    if not is_subscription_active(company):
+        sub = (company.subscription or "trial").strip().lower()
+        status_val = (getattr(company, "status", None) or "active").strip().lower()
+        if status_val == "suspended":
+            from app.core.company_email import MSG_COMPANY_SUSPENDED
+            detail = MSG_COMPANY_SUSPENDED
+        else:
+            detail = MSG_TRIAL_EXPIRED if sub in {"trial", "expired", ""} else MSG_COMPANY_INACTIVE
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+
+    return user
+
+
+def issue_auth_response_data(
+    db: Session,
+    user: User,
+    *,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+    role_name: str | None = None,
+    commit: bool = True,
+) -> dict:
+    from app.services.security_service import (
+        clear_login_failures,
+        create_refresh_token,
+        get_refresh_token_row,
+    )
+    from app.services.session_service import bind_access_jti
+
+    clear_login_failures(db, user, commit=commit)
+    now = datetime.now(timezone.utc)
+    user.last_login_at = now
+    # Do not set tokens_revoked_at here — that would invalidate other devices.
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    refresh = create_refresh_token(db, user, ip_address=ip_address, user_agent=user_agent, commit=commit)
+    row = get_refresh_token_row(db, refresh)
+    access = build_access_token_for_user(
+        user, role_name=role_name, session_id=row.session_uuid if row else None
+    )
+    bind_access_jti(db, refresh, access, commit=commit)
+    user_data = get_user_with_role(db, user, preferred_role=role_name)
+    return {
+        "access_token": access,
+        "refresh_token": refresh,
+        "token_type": "bearer",
+        "user": user_data,
+    }
+
+
+def _permissions_for_role_record(role) -> list[str]:
+    """Resolve module/action permissions for a single role (JSON or matrix fallback).
+
+    Must stay aligned with ``get_user_permissions``:
+    - Admin (any casing) always expands to the full catalog (stale JSON cannot hide dashboard).
+    - Non-Admin non-empty stored JSON is honored as-is (explicit revocations stick).
+    - Quality Control always includes Settings when stored JSON is present.
+    - Empty JSON falls back to PERMISSION_MATRIX for known roles.
+    """
+    from app.core.permissions import is_admin_role_name, normalize_role_name
+    from app.core.rbac_constants import PERMISSION_MATRIX, VALID_MODULES
+
+    role_name = getattr(role, "name", None)
+    if is_admin_role_name(role_name):
+        admin_spec = PERMISSION_MATRIX.get("Admin", {})
+        perms = set(VALID_MODULES)
+        perms.update(admin_spec.get("modules") or [])
+        perms.update(admin_spec.get("actions") or [])
+        return sorted(perms)
+
+    raw = getattr(role, "permissions", None) or []
+    if isinstance(raw, str):
+        try:
+            import json
+
+            raw = json.loads(raw)
+        except ValueError:
+            raw = [raw]
+    normalized = list(raw) if isinstance(raw, (list, tuple, set)) else []
+    if normalized:
+        perms = set(normalized)
+        if normalize_role_name(role_name) == "quality control":
+            perms.add("settings")
+        return sorted(perms)
+
+    spec = PERMISSION_MATRIX.get(role_name or "", {})
+    if not spec:
+        target = normalize_role_name(role_name)
+        for key, value in PERMISSION_MATRIX.items():
+            if normalize_role_name(key) == target:
+                spec = value
+                break
+    perms = list(spec.get("modules", []) or [])
+    perms.extend(spec.get("actions", []) or [])
+    return sorted(set(perms))
+
+
+def get_user_with_role(db: Session, user: User, *, preferred_role: str | None = None) -> dict:
+    from app.core.permissions import normalize_role_name
+    from app.models.platform import CompanyLicense
+
+    roles = getattr(user, "roles", None)
+    if not roles:
+        db.refresh(user, ["roles", "tenant"])
+        roles = user.roles
+    role_names = [r.name for r in roles]
+    primary = None
+    if preferred_role:
+        want = normalize_role_name(preferred_role)
+        primary = next(
+            (r for r in roles if normalize_role_name(r.name) == want),
+            None,
+        )
+    if primary is None:
+        primary = roles[0] if roles else None
+    role_name = primary.name if primary else "Operator"
+    permissions = _permissions_for_role_record(primary) if primary else []
+    tenant = getattr(user, "tenant", None)
+    tenant_name = tenant.name if tenant else None
+
+    license_row = None
+    if tenant:
+        license_row = db.scalars(
+            select(CompanyLicense).where(CompanyLicense.tenant_id == tenant.id)
+        ).first()
+
+    company_code = None
+    if tenant:
+        company_code = getattr(tenant, "company_code", None) or f"GNS-{tenant.id:05d}"
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "phone": getattr(user, "phone", None),
+        "employee_id": getattr(user, "employee_id", None),
+        "designation": getattr(user, "designation", None),
+        "tenant_id": user.tenant_id,
+        "company_id": user.tenant_id,
+        "company_code": company_code,
+        "company_name": tenant_name,
+        "tenant_name": tenant_name,
+        "role_id": primary.id if primary else None,
+        "role": role_name,
+        "role_name": role_name,
+        "roles": role_names,
+        "permissions": permissions,
+        "status": "active" if user.is_active else "inactive",
+        "email_verified": bool(getattr(user, "email_verified", True)),
+        "plant_code": getattr(user, "plant_code", None),
+        "department": getattr(user, "department", None),
+        "assigned_machine_id": getattr(user, "assigned_machine_id", None),
+        "subscription_plan": license_row.plan if license_row else (tenant.subscription if tenant else None),
+        "license_status": getattr(tenant, "license_status", None) if tenant else None,
+        "trial_expires_at": tenant.trial_expires_at.isoformat() if tenant and getattr(tenant, "trial_expires_at", None) else None,
+        "last_login_at": user.last_login_at.isoformat() if getattr(user, "last_login_at", None) else None,
+        "current_login_at": datetime.now(timezone.utc).isoformat(),
+        "avatar": getattr(user, "avatar", None),
+    }
+
+
+def find_user_by_name_and_email(db: Session, full_name: str, email: str) -> User | None:
+    """Match registration identity by full name AND company email together."""
+    normalized_name = (full_name or "").strip()
+    normalized_email = (email or "").strip().lower()
+    if not normalized_name or not normalized_email:
+        return None
+    return db.scalars(
+        select(User).where(
+            func.lower(User.full_name) == normalized_name.lower(),
+            func.lower(User.email) == normalized_email,
+        )
+    ).first()
+
+
+def register_user(
+    db: Session,
+    company_name: str,
+    full_name: str,
+    email: str,
+    password: str,
+    role_name: str = "Operator",
+) -> User:
+    if role_name not in REGISTERABLE_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid role. Choose one of: {', '.join(REGISTERABLE_ROLES)}",
+        )
+
+    from app.core.company_email import (
+        MSG_DUPLICATE_REGISTRATION,
+        MSG_PUBLIC_EMAIL,
+        email_domain,
+        is_public_email_domain,
+    )
+
+    domain = email_domain(email)
+    if is_public_email_domain(domain):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=MSG_PUBLIC_EMAIL,
+        )
+
+    normalized_name = full_name.strip()
+    normalized_email = email.strip().lower()
+
+    existing = find_user_by_name_and_email(db, normalized_name, normalized_email)
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=MSG_DUPLICATE_REGISTRATION,
+        )
+
+    base_name = company_name.strip()[:255]
+    slug_base = _slugify(company_name)
+    display_name = base_name
+    slug = slug_base
+    n = 0
+    while True:
+        name_taken = db.scalars(select(Tenant).where(Tenant.name == display_name)).first()
+        slug_taken = db.scalars(select(Tenant).where(Tenant.slug == slug)).first()
+        if not name_taken and not slug_taken:
+            break
+        n += 1
+        slug = f"{slug_base}-{n}"
+        display_name = f"{base_name} ({n})"[:255]
+
+    try:
+        tenant = Tenant(
+            name=display_name,
+            slug=slug,
+            email=normalized_email,
+            subscription="trial",
+            trial_status=True,
+        )
+        db.add(tenant)
+        db.flush()
+
+        seed_roles_for_tenant(db, tenant.id)
+        assigned_role = db.scalars(
+            select(Role).where(Role.tenant_id == tenant.id, Role.name == role_name)
+        ).first()
+        if not assigned_role:
+            raise HTTPException(status_code=500, detail=f"Failed to provision role: {role_name}")
+
+        user = User(
+            tenant_id=tenant.id,
+            email=normalized_email,
+            full_name=normalized_name,
+            hashed_password=hash_password(password),
+            is_active=not _settings.email_verification_required,
+            email_verified=not _settings.email_verification_required,
+        )
+        db.add(user)
+        db.flush()
+        db.execute(
+            user_roles.insert().values(user_id=user.id, role_id=assigned_role.id)
+        )
+        db.commit()
+        db.refresh(user)
+        return user
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Could not create company account. Please try again.",
+        )
+
+
+def update_user_profile(
+    db: Session,
+    user: User,
+    *,
+    full_name: str | None = None,
+    phone: str | None = None,
+) -> User:
+    if full_name is not None:
+        user.full_name = full_name.strip()
+    if phone is not None:
+        user.phone = phone.strip() if phone and phone.strip() else None
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def change_user_password(
+    db: Session,
+    user: User,
+    *,
+    current_password: str,
+    new_password: str,
+    confirm_password: str,
+) -> None:
+    """Update password after validation. Does not revoke sessions (call revoke after success)."""
+    from app.utils.password import validate_password_strength
+
+    if new_password != confirm_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password and confirmation do not match",
+        )
+    if not verify_password(current_password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+    validate_password_strength(new_password)
+    user.hashed_password = hash_password(new_password)
+    db.commit()
+
+
+def revoke_sessions_after_password_change(
+    db: Session,
+    user: User,
+    *,
+    current_sid: str | None = None,
+    request=None,
+) -> int:
+    """Invalidate every device session after a successful password change.
+
+    Sets ``tokens_revoked_at`` so access tokens issued before revocation fail
+    ``is_access_token_revoked``, and marks all refresh-token rows revoked.
+    """
+    from app.services.session_service import revoke_all_user_sessions
+
+    result = revoke_all_user_sessions(
+        db,
+        user,
+        current_sid=current_sid,
+        request=request,
+    )
+    return int(result.get("revoked_count") or 0)

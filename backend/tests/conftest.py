@@ -1,0 +1,190 @@
+"""Pytest fixtures for the Insights Iva backend.
+
+A throwaway SQLite database is configured *before* the application is imported
+so the app engine binds to it. Each test session gets a fresh file-based DB.
+"""
+import os
+import tempfile
+import uuid
+
+import pytest
+
+# Configure the environment before importing any app module so the engine and
+# settings bind to the throwaway database with a deterministic JWT secret.
+_USE_POSTGRES_TESTS = os.environ.get("USE_POSTGRES_TESTS") == "1"
+_TEST_DB_PATH = None
+if not _USE_POSTGRES_TESTS:
+    _TEST_DB_FD, _TEST_DB_PATH = tempfile.mkstemp(suffix=".db", prefix="smrt_test_")
+    os.close(_TEST_DB_FD)
+    os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH}"
+    os.environ["ALLOW_SQLITE_RUNTIME"] = "1"
+else:
+    os.environ.pop("ALLOW_SQLITE_RUNTIME", None)
+os.environ["JWT_SECRET_KEY"] = "test-secret-key-not-for-production"
+os.environ["ENVIRONMENT"] = "development"
+# Default dual mode so existing tests can read Bearer tokens from login JSON.
+os.environ["AUTH_COOKIE_MODE"] = os.environ.get("AUTH_COOKIE_MODE", "dual")
+# Allow /auth/register in tests (disabled in SaaS production).
+os.environ["ALLOW_PUBLIC_REGISTRATION"] = "true"
+os.environ["STORAGE_PROVIDER"] = "local"
+if _TEST_DB_PATH:
+    os.environ["FILE_STORAGE_LOCAL_PATH"] = _TEST_DB_PATH + "_uploads"
+else:
+    os.environ.setdefault("FILE_STORAGE_LOCAL_PATH", tempfile.mkdtemp(prefix="smrt_pg_uploads_"))
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from app.core.database import SessionLocal, engine  # noqa: E402
+from app.models.base import Base  # noqa: E402
+from app.main import app  # noqa: E402
+from app.models.role import Role  # noqa: E402
+from app.models.tenant import Tenant  # noqa: E402
+from app.models.user import User, user_roles  # noqa: E402
+from app.services.auth_service import hash_password  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _clear_login_rate_limits():
+    """Prevent cross-test pollution from in-memory login rate limit buckets."""
+    from app.middleware.security import clear_buckets
+    from app.services.file_rate_limiter import clear_rate_limits
+    from app.services.storage.token_store import clear_token_store
+
+    from app.core.config import get_settings
+    from app.services.storage.factory import get_storage_provider
+
+    os.environ["STORAGE_PROVIDER"] = "local"
+    get_settings.cache_clear()
+    get_storage_provider.cache_clear()
+    clear_buckets()
+    clear_rate_limits()
+    clear_token_store()
+    yield
+    clear_buckets()
+    clear_rate_limits()
+    clear_token_store()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _create_schema():
+    if _USE_POSTGRES_TESTS:
+        from alembic import command
+        from alembic.config import Config
+
+        cfg = Config("alembic.ini")
+        command.upgrade(cfg, "head")
+    else:
+        Base.metadata.create_all(bind=engine)
+    yield
+    if not _USE_POSTGRES_TESTS:
+        Base.metadata.drop_all(bind=engine)
+        try:
+            if _TEST_DB_PATH:
+                os.remove(_TEST_DB_PATH)
+        except OSError:
+            pass
+
+
+@pytest.fixture()
+def client():
+    return TestClient(app)
+
+
+def _unique_email(prefix="user"):
+    return f"{prefix}-{uuid.uuid4().hex[:8]}@example.com"
+
+
+def auth_test_headers(client, bearer_token: str) -> dict:
+    """Bearer auth plus CSRF when cookie session is active (dual/cookie modes)."""
+    headers = {"Authorization": f"Bearer {bearer_token}"}
+    csrf = client.cookies.get("iva_csrf")
+    if csrf:
+        headers["X-CSRF-Token"] = csrf
+    return headers
+
+
+@pytest.fixture()
+def register_admin(client):
+    """Register a brand new tenant + admin user, then log in (JWT only after login)."""
+
+    def _register(company=None):
+        company = company or f"Company {uuid.uuid4().hex[:6]}"
+        email = _unique_email("admin")
+        password = "Passw0rd!123"
+        resp = client.post(
+            "/auth/register",
+            json={
+                "company_name": company,
+                "full_name": "Admin User",
+                "email": email,
+                "password": password,
+                "role": "Admin",
+            },
+        )
+        assert resp.status_code in (200, 201), resp.text
+        body = resp.json()
+        assert "access_token" not in body
+        assert "message" in body
+
+        login = client.post(
+            "/auth/login",
+            json={"email": email, "password": password, "role": "Admin"},
+        )
+        assert login.status_code == 200, login.text
+        data = login.json()
+        return {
+            "token": data["access_token"],
+            "user": data["user"],
+            "email": email,
+            "password": password,
+            "headers": auth_test_headers(client, data["access_token"]),
+        }
+
+    return _register
+
+
+@pytest.fixture()
+def make_restricted_user(client):
+    """Create a non-admin user in a tenant with a specific permission set,
+    returning auth headers obtained via the login endpoint."""
+
+    def _make(tenant_id, permissions, role_name="Operator"):
+        email = _unique_email("limited")
+        password = "Passw0rd!123"
+        db = SessionLocal()
+        try:
+            # Default login role is Operator; pass role_name to avoid the shop-floor allowlist.
+            role = Role(
+                tenant_id=tenant_id,
+                name=role_name,
+                description="Restricted role",
+                permissions=list(permissions),
+            )
+            db.add(role)
+            db.flush()
+            user = User(
+                tenant_id=tenant_id,
+                email=email,
+                full_name="Limited User",
+                hashed_password=hash_password(password),
+                is_active=True,
+                email_verified=True,
+            )
+            db.add(user)
+            db.flush()
+            db.execute(
+                user_roles.insert().values(user_id=user.id, role_id=role.id)
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        resp = client.post(
+            "/auth/login",
+            json={"email": email, "password": password, "role": role_name},
+        )
+        assert resp.status_code == 200, resp.text
+        token = resp.json()["access_token"]
+        return {"headers": auth_test_headers(client, token), "email": email}
+
+    return _make

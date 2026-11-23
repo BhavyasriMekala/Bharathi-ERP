@@ -1,0 +1,597 @@
+import { Link, useLocation } from "react-router-dom";
+import { ChevronRight, Home } from "lucide-react";
+
+import { isStoreManager } from "../../config/permissions";
+import { findSettingsCategory } from "../../pages/settings/settingsCatalog";
+
+const pathLabels = {
+  "": "Dashboard",
+  production: "Production",
+  planning: "Production Planning",
+  "work-orders": "Work Orders",
+  "job-card": "Job Card",
+  "operator-jobs": "My Operator Jobs",
+  tasks: "Tasks",
+  batches: "Batch Tracking",
+  machines: "Machines",
+  reports: "Daily Reports",
+  create: "Create",
+  new: "Create",
+  inventory: "Inventory",
+  "raw-materials": "Raw Materials",
+  "finished-goods": "Finished Goods",
+  "stock-transfer": "Stock Transfer",
+  "stock-adjustment": "Stock Adjustment",
+  "stock-ledger": "Stock Ledger",
+  "sales-orders": "Sales Orders",
+  "stock-movement": "Stock Movement",
+  items: "Items",
+  warehouses: "Warehouses",
+  suppliers: "Suppliers",
+  sales: "Sales",
+  leads: "Leads",
+  quotations: "Quotations",
+  orders: "Sales Orders",
+  "job-cards": "Job Cards",
+  dispatch: "Shipping",
+  shipping: "Shipping",
+  invoices: "Invoices",
+  customers: "Customers",
+  payments: "Payments",
+  hr: "Human Resources (HR)",
+  "workforce-dashboard": "Workforce Dashboard",
+  employees: "Employees",
+  attendance: "Attendance",
+  leave: "Leave",
+  payroll: "Payroll",
+  accounts: "Accounts",
+  expenses: "Expenses",
+  ledger: "Ledger",
+  "chart-of-accounts": "Chart of Accounts",
+  "journal-entries": "Journal Entries",
+  "balance-sheet": "Balance Sheet",
+  "profit-loss": "Profit & Loss",
+  procurement: "Procurement",
+  purchases: "Purchases",
+  "purchase-orders": "Purchase Orders",
+  vendors: "Vendors",
+  "crm-tracker": "CRM Tracker",
+  "daily-dashboard": "Daily Sales",
+  "order-delivery-tracker": "Delivery Tracker",
+  "job-order-quotation": "Job Order Quote",
+  "goods-receipt": "Goods Receipt Note (GRN)",
+  "supply-chain": "Supply Chain",
+  masters: "Masters",
+  products: "Product Catalog",
+  bom: "Bill of Materials (BOM)",
+  quality: "Quality",
+  analytics: "Analytics",
+  executive: "Executive Dashboard",
+  live: "Live Dashboard",
+  forecasting: "Forecasting",
+  alerts: "Alerts",
+  "low-stock": "Low Stock",
+  documents: "Documents",
+  admin: "Admin",
+  users: "Users",
+  roles: "Roles",
+  permissions: "Permissions",
+  "audit-logs": "Audit Logs",
+  integrations: "Integrations",
+  settings: "Settings",
+  manufacturing: "Manufacturing",
+  workflow: "Job Cards",
+  "factory-monitor": "Factory Monitor",
+  "machine-status": "Machine Status",
+  "production-lines": "Production Lines",
+  iot: "Internet of Things (IoT)",
+  schedule: "Schedule",
+  "assign-tasks": "Assign Tasks",
+  dashboard: "Dashboard",
+  "access-logs": "Access Logs",
+  "accounts-payable": "Accounts Payable",
+  "accounts-receivable": "Accounts Receivable",
+  agvs: "AGVs",
+  assets: "Assets",
+  "bank-reconciliation": "Bank Reconciliation",
+  "batch-reports": "Batch Quality Reports",
+  billing: "Billing",
+  bills: "Bills",
+  breakdowns: "Breakdown Maintenance",
+  "budget-actual": "Budget vs Actual",
+  "bulk-import": "Bulk Import",
+  "change-format": "Format Settings",
+  "change-template": "Template Settings",
+  cobots: "Cobots",
+  compliance: "Compliance",
+  "cost-allocation": "Cost Allocation",
+  "credit-notes": "Credit Notes",
+  "debit-notes": "Debit Notes",
+  defects: "Rejections",
+  "delivery-challans": "Delivery Challans",
+  departments: "Departments",
+  "digital-signature": "Digital Signature",
+  drones: "Drones",
+  "e-invoice": "E-Invoice",
+  ewaybill: "E-Waybill",
+  "expense-settings": "Expense Settings",
+  "export-invoices": "Export Invoices",
+  "export-packing-list": "Export Packing List",
+  "export-proforma-invoices": "Export Proforma Invoices",
+  final: "Final QC",
+  finance: "Finance",
+  "fixed-assets": "Fixed Assets",
+  "format-settings": "Format Settings",
+  "general-ledger": "General Ledger",
+  history: "History",
+  "in-process": "In-Process QC",
+  incidents: "Incidents",
+  incoming: "Incoming Inspection",
+  inspection: "Inspection",
+  "inventory-settings": "Inventory Settings",
+  "invoice-settings": "Invoice Settings",
+  "opening-balances": "Opening Balances",
+  devices: "Manage Devices",
+  "invoice-template": "Invoice Template",
+  "issue-materials": "Issue Materials",
+  "live-operations": "Live Operations",
+  "machine-analytics": "Machine Analytics",
+  "machine-efficiency": "Machine Efficiency",
+  "machine-failure": "Machine Failure",
+  "machine-history": "Machine History",
+  equipment: "Equipment & Spare Parts",
+  maintenance: "Maintenance",
+  "material-requests": "Material Requests",
+  "payment-receipts": "Payment Receipts",
+  "payment-tracking": "Payment Tracking",
+  "payments-made": "Payments Made",
+  performance: "Performance",
+  preventive: "Preventive Maintenance",
+  "proforma-invoices": "Proforma Invoices",
+  "purchase-template": "Purchase Template",
+  "quotation-template": "Quotation Template",
+  "refund-vouchers": "Refund Vouchers",
+  "restore-deleted": "Restore Deleted",
+  "restore-deleted-docs": "Restore Deleted Docs",
+  rfq: "RFQ",
+  safety: "Safety",
+  sensors: "Sensors",
+  "sequence-reset": "Sequence Reset",
+  shifts: "Shifts",
+  "smart-packaging": "Smart Packaging",
+  "stock-in": "Stock In",
+  "stock-return": "Stock Return",
+  "supplier-payments": "Supplier Payments",
+  "tax-reports": "Tax Reports",
+  "template-settings": "Template Settings",
+  "trial-balance": "Trial Balance",
+  wearables: "Wearables",
+};
+
+/** Exact pathname → navbar title (inventory and other routes where segment labels are ambiguous). */
+const PAGE_TITLE_OVERRIDES = {
+  "/my-job-cards": "My Job Cards",
+  "/sales/job-cards/create": "Sales Job Card",
+  "/accounts/gst": "GST",
+  "/reports": "Reports",
+  "/accounts/reports": "Reports",
+  "/settings": "Settings",
+  "/inventory": "Inventory",
+  "/inventory/dashboard": "Dashboard",
+  "/inventory/settings": "Inventory Settings",
+  "/inventory/godown-planner": "Godown Space & Capacity Planner",
+  "/inventory/unit-converter": "Unit Converter & Item Master",
+  "/inventory/eoq-helper": "Order Quantity (EOQ) Helper",
+  "/inventory/stock-valuation": "Stock Valuation (Weighted Average)",
+  "/inventory/hamali-cost": "Hamali / Loading Labour Cost",
+  "/inventory/truck-load": "Truck Load Planner",
+  "/inventory/damage-loss": "Damage, Shrinkage & Loss",
+  "/inventory/storage-quotation": "Storage Quotation",
+  "/inventory/gate-pass": "Gate Pass / Delivery Challan",
+  "/inventory/godown-dashboard": "Godown Dashboard",
+  "/inventory/list": "Inventory List",
+  "/inventory/raw-materials": "Raw Materials",
+  "/inventory/finished-goods": "Finished Goods",
+  "/inventory/stock-transfer": "Stock Transfer",
+  "/inventory/stock-adjustment": "Stock Adjustment",
+  "/inventory/stock-ledger": "Stock Ledger",
+  "/sales/reports/sales": "Sales Report",
+  "/sales/reports/sales-orders": "Sales Order Report",
+  "/sales/reports/quotations": "Quotation Report",
+  "/sales/reports/customers": "Customer Report",
+  "/inventory/low-stock": "Low Stock Items",
+  "/inventory/out-of-stock": "Out of Stock Items",
+  "/inventory/pending-inventory-checks": "Pending Inventory Checks",
+  "/inventory/todays-stock-out": "Today's Stock Out",
+  "/inventory/reports": "Reports",
+  "/store/reports": "Reports",
+  "/inventory/stock-movement": "Stock Movement",
+  "/inventory/stock-in": "Stock In",
+  "/inventory/stock-return": "Stock Return",
+  "/inventory/material-requests": "Material Requests",
+  "/inventory/issue-materials": "Issue Materials",
+  "/inventory/history": "Inventory History",
+  "/inventory/warehouses": "Warehouses",
+  "/inventory/suppliers": "Suppliers",
+  "/procurement/vendors/tracker": "Supplier Tracker",
+  "/inventory/items/create": "Create Item",
+  "/inventory/warehouses/create": "Create Warehouse",
+  "/inventory/suppliers/create": "Create Supplier",
+  "/meetings": "Meetings",
+  "/procurement/purchase-orders/create": "Create Purchase Order",
+  "/sales/payments/create": "Record Payment",
+  "/sales/payment-receipts/create": "Record Payment",
+  "/production/operator-jobs": "My Operator Jobs",
+  "/production/dashboard": "Dashboard",
+  "/production/planning": "Production Planning",
+  "/sales": "Dashboard",
+  "/accounts/dashboard": "Dashboard",
+  "/hr": "Dashboard",
+  "/procurement": "Dashboard",
+  "/analytics": "Executive Dashboard",
+  "/analytics/executive": "Executive Dashboard",
+  "/analytics/live": "Live Dashboard",
+  "/analytics/production": "Production KPI",
+  "/analytics/inventory": "Inventory KPI",
+  "/analytics/sales": "Sales KPI",
+  "/analytics/finance": "Finance KPI",
+  "/sales/leads/new": "Create New Lead",
+};
+
+const BREADCRUMB_TITLE_OVERRIDES = {
+  "/inventory": "Stock Items",
+  "/production/dashboard": "Dashboard",
+  "/sales/leads/new": "Create New Lead",
+};
+
+const STAGE_LABELS = {
+  store: "Store Issue",
+  production: "Production Planning",
+  production_manager: "Production Manager",
+  operator: "Shop Floor Execution",
+  quality: "Quality Inspection",
+  packing: "Packing & Dispatch",
+  billing: "GST Tax Invoice",
+};
+
+const ENTITY_SINGULAR = {
+  invoices: "Invoice",
+  quotations: "Quotation",
+  orders: "Sales Order",
+  "job-cards": "Job Card",
+  "job-card": "Job Card",
+  workflow: "Job Card",
+  order: "Job Card",
+  bills: "Bill",
+  "debit-notes": "Debit Note",
+  "credit-notes": "Credit Note",
+  "delivery-challans": "Delivery Challan",
+  "proforma-invoices": "Proforma Invoice",
+  "export-invoices": "Export Invoice",
+  "export-proforma-invoices": "Export Proforma Invoice",
+  purchases: "Purchase",
+  "purchase-orders": "Purchase Order",
+  "goods-receipt": "Goods Receipt",
+  "material-requests": "Material Request",
+  "supplier-payments": "Supplier Payment",
+  "vendor-bills": "Vendor Bill",
+  vendors: "Vendor",
+  customers: "Customer",
+  products: "Product",
+  items: "Item",
+  warehouses: "Warehouse",
+  suppliers: "Supplier",
+  "work-orders": "Work Order",
+  meetings: "Meeting",
+  "journal-entries": "Journal Entry",
+  "chart-of-accounts": "Account",
+  reports: "Report",
+  "payment-receipts": "Payment Receipt",
+  "refund-vouchers": "Refund Voucher",
+  "payments-made": "Payment Made",
+  leads: "Lead",
+  employees: "Employee",
+  tasks: "Task",
+  machines: "Machine",
+  departments: "Department",
+  users: "User",
+  roles: "Role",
+};
+
+function getLabel(segment, segments, index) {
+  const prev = index > 0 ? segments[index - 1] : null;
+  const prevPrev = index > 1 ? segments[index - 2] : null;
+
+  if (segment === "tracker" && prev === "vendors") return "Supplier Tracker";
+  if (segment === "dashboard" && prev === "inventory") return "Dashboard";
+  if (segment === "settings" && prev === "inventory") return "Inventory Settings";
+  if ((segment === "create" || segment === "new") && prev && ENTITY_SINGULAR[prev]) {
+    if (segment === "new" && prev === "leads") return "Create New Lead";
+    return `Create ${ENTITY_SINGULAR[prev]}`;
+  }
+  if (segment === "edit" && index >= 2) {
+    const parentEntity = segments[index - 2];
+    if (ENTITY_SINGULAR[parentEntity]) return `Edit ${ENTITY_SINGULAR[parentEntity]}`;
+    return "Edit";
+  }
+  if (segment === "copy" && index >= 2) {
+    const parentEntity = segments[index - 2];
+    if (ENTITY_SINGULAR[parentEntity]) return `${ENTITY_SINGULAR[parentEntity]} Copy`;
+    return "Copy";
+  }
+  if (prev === "settings" && index >= 1) {
+    const cat = findSettingsCategory(segment);
+    if (cat) return cat.title;
+  }
+
+  // Manufacturing workflow stage labels — not for top-level /production routes
+  const inWorkflowStage =
+    segments.includes("workflow") &&
+    (prev === "order" || (prev && /^\d+$/.test(prev) && segments.includes("order")));
+  if (inWorkflowStage && STAGE_LABELS[segment]) {
+    return STAGE_LABELS[segment];
+  }
+
+  // If segment is a numeric ID under an entity or order
+  const isIdSegment = /^\d+$/.test(segment);
+  if (isIdSegment) {
+    if (prev === "job-cards" || prev === "order" || prev === "workflow") {
+      return "Job Card Details";
+    }
+    if (prev && ENTITY_SINGULAR[prev]) {
+      return `${ENTITY_SINGULAR[prev]} Details`;
+    }
+    return "Details";
+  }
+
+  // If segment is an alphanumeric ID under an entity list
+  if (
+    prev &&
+    ENTITY_SINGULAR[prev] &&
+    !pathLabels[segment] &&
+    segment.length > 0 &&
+    !["create", "new", "edit", "copy", "bulk-import"].includes(segment)
+  ) {
+    return `${ENTITY_SINGULAR[prev]} Details`;
+  }
+
+  return pathLabels[segment] || segment.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Role dashboard homes (Admin, Store, Sales, Production, Operator/QC, HR, Accounts, Purchase).
+ * Navbar shows the page title only — no breadcrumb row.
+ */
+export const ROLE_DASHBOARD_HOME_PATHS = new Set([
+  "/",
+  "/dashboard",
+  "/inventory/dashboard",
+  "/sales",
+  "/production/dashboard",
+  "/hr",
+  "/accounts/dashboard",
+  "/procurement",
+]);
+
+/** @deprecated Prefer isRoleDashboardHome — kept for existing imports. */
+export function isErpDashboardRoot(pathname) {
+  return isRoleDashboardHome(pathname);
+}
+
+export function isRoleDashboardHome(pathname) {
+  const path = (pathname || "/").replace(/\/$/, "") || "/";
+  return ROLE_DASHBOARD_HOME_PATHS.has(path);
+}
+
+function normalizeBreadcrumbLabel(label) {
+  return String(label || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * Breadcrumb items for the shared Navbar: empty on role dashboard homes, and
+ * drops a trailing crumb that duplicates the page title text.
+ */
+export function getVisibleBreadcrumbItems(pathname, pageTitle = null) {
+  const path = (pathname || "/").replace(/\/$/, "") || "/";
+  if (isRoleDashboardHome(path)) return [];
+
+  const title = pageTitle ?? getPageTitle(path);
+  let trail = getBreadcrumbTrail(path);
+  if (!trail.length) return [];
+
+  const last = trail[trail.length - 1];
+  if (normalizeBreadcrumbLabel(last?.label) === normalizeBreadcrumbLabel(title)) {
+    trail = trail.slice(0, -1);
+  }
+
+  // Lone "Home/Dashboard" crumb is noise under the title — hide the row.
+  if (trail.length <= 1) return [];
+  return trail;
+}
+
+export function shouldShowNavbarBreadcrumb(pathname, pageTitle = null) {
+  return getVisibleBreadcrumbItems(pathname, pageTitle).length > 0;
+}
+
+/** Build breadcrumb trail for a pathname. */
+export function getBreadcrumbTrail(pathname) {
+  const normalizedPath = (pathname || "/").replace(/\/$/, "") || "/";
+  const segments = (pathname || "/").split("/").filter(Boolean);
+
+  if (isRoleDashboardHome(normalizedPath)) {
+    const label = PAGE_TITLE_OVERRIDES[normalizedPath] || "Dashboard";
+    return [{ label, path: normalizedPath === "/" ? "/" : normalizedPath }];
+  }
+
+  // Workflow job card paths contain routing details (workflow/order/id) that
+  // make poor breadcrumbs. Show the section, list, and active stage instead.
+  const workflowStageMatch = normalizedPath.match(
+    /^\/manufacturing\/workflow\/order\/\d+\/[a-z0-9_-]+$/i
+  );
+  if (workflowStageMatch) {
+    return [
+      { label: "Dashboard", path: "/" },
+      { label: "Production", path: "/production/dashboard" },
+      { label: "Work Order", path: "/production/work-orders" },
+      { label: "Job Card", path: normalizedPath },
+    ];
+  }
+
+  if (segments[0] === "admin") {
+    const adminLabels = {
+      users: "Users",
+      roles: "Roles",
+      permissions: "Permissions",
+      "audit-logs": "Audit Logs",
+    };
+    const trail = [{ label: "Dashboard", path: "/" }, { label: "Administration", path: "/admin/users" }];
+    segments.slice(1).forEach((seg, i) => {
+      const slice = segments.slice(0, i + 2);
+      trail.push({
+        label: adminLabels[seg] || getLabel(seg, segments, i + 1),
+        path: `/${slice.join("/")}`,
+      });
+    });
+    return trail;
+  }
+
+  if (!segments.length) {
+    return [{ label: "Dashboard", path: "/" }];
+  }
+
+  if (normalizedPath === "/inventory/stock-in") {
+    return [
+      { label: "Dashboard", path: "/" },
+      { label: "Purchases", path: "/purchases" },
+      { label: "Stock In", path: "/inventory/stock-in" },
+    ];
+  }
+
+  if (normalizedPath === "/procurement/material-requests") {
+    return [
+      { label: "Dashboard", path: "/" },
+      { label: "Purchases", path: "/purchases" },
+      {
+        label: "Purchase Requisitions",
+        path: "/procurement/material-requests",
+      },
+    ];
+  }
+  if (normalizedPath === "/production/planning") {
+    return [
+      { label: "Dashboard", path: "/production/dashboard" },
+      { label: "Production", path: "/production/planning" },
+      { label: "Production Planning", path: "/production/planning" },
+    ];
+  }
+
+  const trail = [
+    { label: "Dashboard", path: "/" },
+    ...segments.map((seg, i) => ({
+      label: getLabel(seg, segments, i),
+      path: "/" + segments.slice(0, i + 1).join("/"),
+    })),
+  ];
+
+  if (normalizedPath === "/inventory") {
+    trail.push({
+      label: "Stock Items",
+      path: "/inventory",
+    });
+  }
+
+  const lastItem = trail[trail.length - 1];
+
+  if (
+    lastItem &&
+    BREADCRUMB_TITLE_OVERRIDES[normalizedPath] &&
+    normalizedPath !== "/inventory"
+  ) {
+    lastItem.label = BREADCRUMB_TITLE_OVERRIDES[normalizedPath];
+  }
+  return trail;
+}
+
+/** Current page title from the last breadcrumb segment. */
+export function getPageTitle(pathname, user = null) {
+  const path = (pathname || "/").replace(/\/$/, "") || "/";
+  if (PAGE_TITLE_OVERRIDES[path]) return PAGE_TITLE_OVERRIDES[path];
+  if (isRoleDashboardHome(path)) return "Dashboard";
+  if (path === "/settings" || path.startsWith("/settings/")) return "Settings";
+
+  // Specific dynamic pattern matches
+  if (/^\/job-cards\/\d+$/i.test(path) || /^\/my-job-cards\/\d+$/i.test(path)) {
+    return "Sales Job Card";
+  }
+  if (/^\/sales\/job-cards\/\d+$/i.test(path)) {
+    return "Job Card Details";
+  }
+  if (/^\/sales\/job-cards\/\d+\/edit$/i.test(path)) {
+    return "Sales Job Card";
+  }
+  const stageMatch = path.match(/^\/manufacturing\/workflow\/order\/\d+\/([a-z0-9_-]+)$/i);
+  if (stageMatch && stageMatch[1]) {
+    const stageKey = stageMatch[1].toLowerCase();
+    if (STAGE_LABELS[stageKey]) {
+      return `Job Card – ${STAGE_LABELS[stageKey]}`;
+    }
+  }
+  if (/^\/manufacturing\/workflow\/order\/\d+$/i.test(path)) {
+    return "Job Card Details";
+  }
+
+  const trail = getBreadcrumbTrail(pathname);
+  const last = trail[trail.length - 1]?.label;
+  if (/^\d+$/.test(last)) return "Job Card Details";
+  return last || "Dashboard";
+}
+
+export default function Breadcrumbs({ items: customItems, compact = false, className = "" }) {
+  const { pathname } = useLocation();
+  const pageTitle = getPageTitle(pathname);
+  const items =
+    customItems ??
+    getVisibleBreadcrumbItems(pathname, pageTitle);
+
+  if (!items.length || items.length <= 1) return null;
+
+  return (
+    <nav
+      aria-label="Breadcrumb"
+      className={`flex items-center gap-1 text-[var(--color-text-muted)] print:hidden ${
+        compact ? "text-xs" : "text-sm"
+      } ${className}`}
+    >
+      {items.map((item, i) => (
+        <span key={item.path + i} className="flex min-w-0 items-center gap-1">
+          {i > 0 && (
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-icon)]" aria-hidden />
+          )}
+          {i === items.length - 1 ? (
+            <span className="truncate font-medium text-[var(--color-text-secondary)]">
+              {i === 0 ? (
+                <span className="inline-flex items-center gap-1">
+                  <Home className="h-3.5 w-3.5" aria-hidden />
+                  <span className="sr-only">Dashboard</span>
+                </span>
+              ) : (
+                item.label
+              )}
+            </span>
+          ) : (
+            <Link
+              to={item.path}
+              className="flex items-center gap-1 truncate transition-colors hover:underline"
+              aria-label={i === 0 ? "Home" : undefined}
+            >
+              {i === 0 ? <Home className="h-3.5 w-3.5 shrink-0" aria-hidden /> : item.label}
+            </Link>
+          )}
+        </span>
+      ))}
+    </nav>
+  );
+}

@@ -1,0 +1,806 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useNavigate } from "react-router-dom";
+import {
+  ArrowLeft,
+  CalendarDays,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Filter,
+  MoreVertical,
+  Plus,
+  Search,
+  X,
+} from "lucide-react";
+
+import Loader from "../../components/common/Loader";
+import { SearchBar } from "../../components/common/SearchFilter";
+import ShorthandQuantityInput from "../../components/common/ShorthandQuantityInput";
+import { ListPageShell } from "../../components/common/ListPageShell";
+import usePageRefresh from "../../hooks/usePageRefresh";
+import { useToast } from "../../context/ToastContext";
+import {
+  approveExpenseClaims,
+  createExpenseApproval,
+  deleteExpenseApproval,
+  getEmployeesEnriched,
+  getExpenseApprovals,
+  getTeamDirectory,
+  rejectExpenseClaims,
+} from "../../api/hrApi";
+
+import "./expenseApprovals.css";
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+const BRANCH_OPTIONS = [
+  { value: "", label: "Select Branch" },
+  { value: "hq", label: "Head Office" },
+  { value: "plant", label: "Manufacturing Plant" },
+];
+
+const DEPARTMENT_OPTIONS = [
+  { value: "", label: "Select Department" },
+  { value: "hr", label: "HR Department" },
+  { value: "production", label: "Production" },
+  { value: "accounts", label: "Accounts" },
+];
+
+const CATEGORY_OPTIONS = [
+  { value: "", label: "Select Expense Category" },
+  { value: "travel", label: "Travel" },
+  { value: "food", label: "Food" },
+  { value: "accommodation", label: "Accommodation" },
+  { value: "supplies", label: "Office Supplies" },
+  { value: "other", label: "Other" },
+];
+
+const STATUS_FILTER_OPTIONS = [
+  { value: "", label: "Select Status" },
+  { value: "pending", label: "Pending" },
+  { value: "approved", label: "Approved" },
+  { value: "rejected", label: "Rejected" },
+  { value: "cancelled", label: "Cancelled" },
+];
+
+function formatDisplayDate(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return `${String(d.getDate()).padStart(2, "0")}-${MONTHS[d.getMonth()]}-${d.getFullYear()}`;
+}
+
+function formatAmount(value) {
+  const n = Number(value);
+  if (Number.isNaN(n)) return "—";
+  return `₹ ${n.toLocaleString("en-IN")}`;
+}
+
+function categoryLabel(value) {
+  return CATEGORY_OPTIONS.find((o) => o.value === value)?.label || value || "—";
+}
+
+function branchLabel(value) {
+  return BRANCH_OPTIONS.find((o) => o.value === value)?.label || value || "—";
+}
+
+function departmentLabel(value) {
+  return DEPARTMENT_OPTIONS.find((o) => o.value === value)?.label || value || "—";
+}
+
+function StatusBadge({ status }) {
+  const key = String(status || "pending").toLowerCase();
+  return <span className={`hr-exp-approvals__status hr-exp-approvals__status--${key}`}>{status || "Pending"}</span>;
+}
+
+function ApprovalRowActionMenu({ row, onApprove, onReject, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const isPending = String(row.status || "").toLowerCase() === "pending";
+
+  return (
+    <div ref={rootRef} className="hr-exp-approvals__action-wrap">
+      <button
+        type="button"
+        className="hr-exp-approvals__action-btn"
+        aria-label="Actions"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <MoreVertical className="h-4 w-4" />
+      </button>
+      {open && (
+        <div className="hr-exp-approvals__action-menu">
+          {isPending && (
+            <>
+              <button
+                type="button"
+                className="hr-exp-approvals__action-item hr-exp-approvals__action-item--success"
+                onClick={() => {
+                  setOpen(false);
+                  onApprove(row);
+                }}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                className="hr-exp-approvals__action-item"
+                style={{ color: "#d97706", fontWeight: 500 }}
+                onClick={() => {
+                  setOpen(false);
+                  onReject(row);
+                }}
+              >
+                Reject
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            className="hr-exp-approvals__action-item hr-exp-approvals__action-item--danger"
+            onClick={() => {
+              setOpen(false);
+              onDelete(row);
+            }}
+          >
+            Delete
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EmployeeSelect({ value, onChange, employees }) {
+
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const rootRef = useRef(null);
+  const selected = employees.find((e) => e.value === value) || employees[0];
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const filtered = employees.filter((e) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return e.label.toLowerCase().includes(q);
+  });
+
+  return (
+    <div ref={rootRef} className="hr-exp-approvals__employee-select">
+      <button type="button" className="hr-exp-approvals__select-trigger" onClick={() => setOpen((v) => !v)}>
+        <span>{selected?.label || "All Employees"}</span>
+        <ChevronDown className="h-4 w-4 shrink-0 text-[#9ca3af]" />
+      </button>
+      {open ? (
+        <div className="hr-exp-approvals__select-menu">
+          <div className="hr-exp-approvals__select-search p-2">
+            <SearchBar
+              size="compact"
+              value={query}
+              onChange={setQuery}
+              placeholder="Search Employee"
+             
+              aria-label="Search employees"
+            />
+          </div>
+          {filtered.map((emp) => (
+            <button
+              key={emp.value}
+              type="button"
+              className={`hr-exp-approvals__select-option ${emp.value === value ? "hr-exp-approvals__select-option--active" : ""}`}
+              onClick={() => { onChange(emp.value); setOpen(false); setQuery(""); }}
+            >
+              {emp.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FilterPopover({
+  open,
+  onClose,
+  category,
+  status,
+  branch,
+  department,
+  onCategoryChange,
+  onStatusChange,
+  onBranchChange,
+  onDepartmentChange,
+  onApply,
+  onClear,
+}) {
+  const rootRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) onClose();
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div ref={rootRef} className="hr-exp-approvals__filter-popover">
+      <div className="hr-exp-approvals__filter-popover-header">
+        <h3>Filter</h3>
+        <button type="button" className="hr-exp-approvals__modal-close" onClick={onClose} aria-label="Close filter">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="hr-exp-approvals__filter-popover-body">
+        <div className="hr-exp-approvals__field">
+          <label className="hr-exp-approvals__field-label">Expense Category</label>
+          <select className="hr-exp-approvals__field-select" value={category} onChange={(e) => onCategoryChange(e.target.value)}>
+            {CATEGORY_OPTIONS.map((o) => <option key={o.value || o.label} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+        <div className="hr-exp-approvals__field">
+          <label className="hr-exp-approvals__field-label">Status</label>
+          <select className="hr-exp-approvals__field-select" value={status} onChange={(e) => onStatusChange(e.target.value)}>
+            {STATUS_FILTER_OPTIONS.map((o) => <option key={o.value || o.label} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+        <div className="hr-exp-approvals__field">
+          <label className="hr-exp-approvals__field-label">Branch</label>
+          <select className="hr-exp-approvals__field-select" value={branch} onChange={(e) => onBranchChange(e.target.value)}>
+            {BRANCH_OPTIONS.map((o) => <option key={o.value || o.label} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+        <div className="hr-exp-approvals__field">
+          <label className="hr-exp-approvals__field-label">Department</label>
+          <select className="hr-exp-approvals__field-select" value={department} onChange={(e) => onDepartmentChange(e.target.value)}>
+            {DEPARTMENT_OPTIONS.map((o) => <option key={o.value || o.label} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+      </div>
+      <div className="hr-exp-approvals__filter-popover-footer">
+        <button
+          type="button"
+          className="hr-exp-approvals__clear-btn"
+          onClick={() => {
+            if (onClear) onClear();
+            else {
+              onCategoryChange("");
+              onStatusChange("");
+              onBranchChange("");
+              onDepartmentChange("");
+              onClose();
+            }
+          }}
+        >
+          Clear
+        </button>
+        <button type="button" className="hr-exp-approvals__apply-btn" onClick={onApply}>Apply</button>
+      </div>
+    </div>
+  );
+}
+
+function AddExpenseDrawer({ open, onClose, onSave, employees }) {
+  const [employeeId, setEmployeeId] = useState("");
+  const [category, setCategory] = useState("");
+  const [name, setName] = useState("");
+  const [expenseDate, setExpenseDate] = useState("");
+  const [amount, setAmount] = useState("");
+  const [details, setDetails] = useState("");
+  const fileRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setEmployeeId(employees[0]?.value || "");
+    setCategory("");
+    setName("");
+    setExpenseDate("");
+    setAmount("");
+    setDetails("");
+  }, [open]);
+
+  useEffect(() => {
+    if (open && !employeeId && employees[0]?.value) setEmployeeId(employees[0].value);
+  }, [open, employeeId, employees]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, [open]);
+
+  if (!open) return null;
+
+  const empOptions = employees.filter((e) => e.value !== "all");
+
+  const drawer = (
+    <div className="hr-exp-approvals__overlay" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="hr-exp-approvals__drawer" onClick={(e) => e.stopPropagation()}>
+        <div className="hr-exp-approvals__drawer-header">
+          <svg className="hr-exp-approvals__drawer-waves" viewBox="0 0 120 48" fill="none" aria-hidden>
+            <path d="M0 32C20 20 40 44 60 28C80 12 100 36 120 24V48H0V32Z" fill="rgba(255,255,255,0.6)" />
+            <path d="M0 24C18 14 36 34 54 22C72 10 96 30 120 18V48H0V24Z" fill="rgba(255,255,255,0.35)" />
+          </svg>
+          <button type="button" className="hr-exp-approvals__drawer-close" onClick={onClose} aria-label="Close">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="hr-exp-approvals__drawer-body">
+          <h2 className="hr-exp-approvals__drawer-title">Add Expense</h2>
+
+          <div className="hr-exp-approvals__form-field">
+            <label className="hr-exp-approvals__form-label">Employee</label>
+            <select className="hr-exp-approvals__select" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+              {empOptions.map((e) => <option key={e.value} value={e.value}>{e.label}</option>)}
+            </select>
+          </div>
+
+          <div className="hr-exp-approvals__form-field">
+            <label className="hr-exp-approvals__form-label">Expense Category <span>*</span></label>
+            <select className="hr-exp-approvals__select" value={category} onChange={(e) => setCategory(e.target.value)}>
+              {CATEGORY_OPTIONS.map((o) => <option key={o.value || o.label} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+
+          <div className="hr-exp-approvals__form-field">
+            <label className="hr-exp-approvals__form-label">Expense Name <span>*</span></label>
+            <input className="hr-exp-approvals__input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Enter Expense Name" />
+          </div>
+
+          <div className="hr-exp-approvals__form-field">
+            <label className="hr-exp-approvals__form-label">Expense Date <span>*</span></label>
+            <div className="hr-exp-approvals__date-wrap">
+              <span className={expenseDate ? "" : "is-placeholder"}>{expenseDate ? formatDisplayDate(expenseDate) : "dd-mmm-yyyy"}</span>
+              <CalendarDays className="h-4 w-4 shrink-0 text-[#9ca3af]" />
+              <input type="date" value={expenseDate} onChange={(e) => setExpenseDate(e.target.value)} />
+            </div>
+          </div>
+
+          <div className="hr-exp-approvals__form-field">
+            <label className="hr-exp-approvals__form-label">Amount <span>*</span></label>
+            <ShorthandQuantityInput
+              value={amount}
+              onChange={(val) => setAmount(val)}
+              prefix="₹"
+              placeholder="Enter Amount (e.g. 1,500 or 15k)"
+            />
+          </div>
+
+          <div className="hr-exp-approvals__form-field">
+            <label className="hr-exp-approvals__form-label">Details <span>*</span></label>
+            <textarea className="hr-exp-approvals__textarea" value={details} onChange={(e) => setDetails(e.target.value)} placeholder="Enter Detail" />
+          </div>
+
+          <div className="hr-exp-approvals__form-field">
+            <label className="hr-exp-approvals__form-label">Attachment</label>
+            <p className="hr-exp-approvals__upload-hint">Maximum file size: 10MB.</p>
+            <div className="hr-exp-approvals__upload-zone">
+              <button type="button" className="hr-exp-approvals__upload-btn" onClick={() => fileRef.current?.click()}>
+                <Plus className="h-4 w-4" />
+                Upload Document
+              </button>
+              <input ref={fileRef} type="file" className="hr-exp-approvals__hidden-input" />
+            </div>
+          </div>
+        </div>
+        <div className="hr-exp-approvals__drawer-footer">
+          <button
+            type="button"
+            className="hr-exp-approvals__save-btn"
+            onClick={() => {
+              if (!category || !name.trim() || !expenseDate || !amount || !details.trim()) return;
+              const emp = empOptions.find((e) => e.value === employeeId);
+              onSave({
+                employee_id: emp?.employeeId || null,
+                employee_name: emp?.label || "—",
+                branch: emp?.branch || "",
+                department: emp?.department || "",
+                category,
+                name: name.trim(),
+                expense_date: expenseDate,
+                amount: Number(amount),
+                details: details.trim(),
+                status: "Pending",
+              });
+              onClose();
+            }}
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  return createPortal(drawer, document.body);
+}
+
+export default function ExpenseApprovals() {
+  const navigate = useNavigate();
+  const { addToast } = useToast();
+  const [loading, setLoading] = useState(true);
+  const [records, setRecords] = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const [viewDate, setViewDate] = useState(() => new Date());
+  const [employeeFilter, setEmployeeFilter] = useState("all");
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [draftCategory, setDraftCategory] = useState("");
+  const [draftStatus, setDraftStatus] = useState("");
+  const [draftBranch, setDraftBranch] = useState("");
+  const [draftDepartment, setDraftDepartment] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [branchFilter, setBranchFilter] = useState("");
+  const [departmentFilter, setDepartmentFilter] = useState("");
+  const [selected, setSelected] = useState([]);
+  const [pageSize, setPageSize] = useState(25);
+  const [page, setPage] = useState(1);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  const periodLabel = `${MONTHS[viewDate.getMonth()]} ${viewDate.getFullYear()}`;
+
+  const load = useCallback(async (isRefresh = false) => {
+    if (!isRefresh) setLoading(true);
+    try {
+      const res = await getExpenseApprovals({
+        month: viewDate.getMonth() + 1,
+        year: viewDate.getFullYear(),
+      });
+      const rows = Array.isArray(res?.data) ? res.data : [];
+      setRecords(rows);
+    } catch {
+      setRecords([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [viewDate]);
+
+  const loadEmployees = useCallback(async () => {
+    try {
+      const [employeeRes, userRes] = await Promise.all([getEmployeesEnriched(), getTeamDirectory()]);
+      const employeeRows = Array.isArray(employeeRes?.data) ? employeeRes.data : [];
+      const userRows = Array.isArray(userRes?.data) ? userRes.data : [];
+      const options = employeeRows
+        .filter((employee) => employee?.is_active !== false)
+        .map((employee) => ({
+          value: String(employee.id ?? employee.employee_id ?? ""),
+          employeeId: employee.id ?? null,
+          label: employee.full_name || employee.name || employee.email || "Employee",
+          employeeCode: employee.employee_code || employee.employee_id || "",
+          branch: employee.branch || employee.branch_name || "",
+          department: employee.department || employee.department_name || "",
+        }))
+        .filter((employee) => employee.value);
+      const knownKeys = new Set(
+        options.flatMap((employee) => [employee.employeeCode, employee.label, employee.value]
+          .filter(Boolean)
+          .map((value) => String(value).trim().toLowerCase()))
+      );
+      const userOptions = userRows
+        .filter((user) => user?.is_active !== false)
+        .filter((user) => {
+          const keys = [user.employee_id, user.full_name, user.name, user.email]
+            .filter(Boolean)
+            .map((value) => String(value).trim().toLowerCase());
+          return !keys.some((key) => knownKeys.has(key));
+        })
+        .map((user) => ({
+          value: `user-${user.id}`,
+          employeeId: null,
+          label: user.full_name || user.name || user.email || "User",
+          branch: "",
+          department: user.department || "",
+        }));
+      const uniqueOptions = [...options, ...userOptions].filter((employee, index, all) => {
+        const key = employee.label.trim().toLowerCase();
+        return all.findIndex((candidate) => candidate.label.trim().toLowerCase() === key) === index;
+      });
+      setEmployees(uniqueOptions);
+    } catch {
+      setEmployees([]);
+    }
+  }, []);
+
+  usePageRefresh(() => load(true));
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => { loadEmployees(); }, [loadEmployees]);
+
+  const employeeOptions = useMemo(
+    () => [{ value: "all", label: "All Employees" }, ...employees],
+    [employees]
+  );
+
+  const filteredRows = useMemo(() => {
+    return records.filter((row) => {
+      if (employeeFilter !== "all" && String(row.employee_id ?? "") !== employeeFilter) return false;
+      if (categoryFilter && row.category !== categoryFilter) return false;
+      if (statusFilter && String(row.status || "").toLowerCase() !== statusFilter) return false;
+      if (branchFilter && row.branch !== branchFilter) return false;
+      if (departmentFilter && row.department !== departmentFilter) return false;
+      return true;
+    });
+  }, [records, employeeFilter, categoryFilter, statusFilter, branchFilter, departmentFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pagedRows = filteredRows.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const allPageSelected = pagedRows.length > 0 && pagedRows.every((r) => selected.includes(r.id));
+
+  const handleApprove = async () => {
+    if (!selected.length) return;
+    try {
+      await approveExpenseClaims({ ids: selected, status: "approved" });
+      addToast("Expenses approved", "success");
+      setRecords((prev) => prev.map((row) => (selected.includes(row.id) ? { ...row, status: "Approved" } : row)));
+      setSelected([]);
+    } catch {
+      addToast("Failed to approve expenses", "error");
+    }
+  };
+
+  const handleApproveRow = async (row) => {
+    try {
+      if (row.id && !String(row.id).startsWith("exp-")) {
+        await approveExpenseClaims({ ids: [row.id], status: "approved" });
+      }
+      setRecords((prev) => prev.map((r) => (r.id === row.id ? { ...r, status: "Approved" } : r)));
+      addToast("Expense approved successfully", "success");
+    } catch {
+      addToast("Failed to approve expense", "error");
+    }
+  };
+
+  const handleRejectRow = async (row) => {
+    try {
+      if (row.id && !String(row.id).startsWith("exp-")) {
+        await rejectExpenseClaims({ ids: [row.id] });
+      }
+      setRecords((prev) => prev.map((r) => (r.id === row.id ? { ...r, status: "Rejected" } : r)));
+      addToast("Expense rejected", "info");
+    } catch {
+      addToast("Failed to reject expense", "error");
+    }
+  };
+
+  const handleDeleteRow = async (row) => {
+    if (!window.confirm(`Are you sure you want to delete "${row.name || "this expense"}"?`)) return;
+    try {
+      if (row.id && !String(row.id).startsWith("exp-")) {
+        await deleteExpenseApproval(row.id);
+      }
+      setRecords((prev) => prev.filter((r) => r.id !== row.id));
+      setSelected((prev) => prev.filter((id) => id !== row.id));
+      addToast("Expense deleted successfully", "success");
+    } catch {
+      addToast("Failed to delete expense", "error");
+    }
+  };
+
+  const handleSave = async (payload) => {
+    try {
+      const res = await createExpenseApproval(payload);
+      addToast("Expense added successfully", "success");
+      const created = res?.data || { ...payload, id: `exp-appr-${Date.now()}` };
+      setRecords((prev) => [created, ...prev]);
+    } catch {
+      addToast("Failed to add expense", "error");
+    }
+  };
+
+
+  const shiftMonth = (delta) => {
+    setViewDate((prev) => new Date(prev.getFullYear(), prev.getMonth() + delta, 1));
+    setPage(1);
+    setSelected([]);
+  };
+
+  if (loading) return <Loader label="Loading expense approvals..." />;
+
+  const showingFrom = pagedRows.length ? (currentPage - 1) * pageSize + 1 : 0;
+  const showingTo = Math.min(currentPage * pageSize, filteredRows.length);
+
+  return (
+    <>
+      <ListPageShell>
+        <div className="hr-exp-approvals min-w-0">
+          <div className="hr-exp-approvals__header">
+            <div className="hr-exp-approvals__title-row">
+              <button type="button" className="hr-exp-approvals__back" onClick={() => navigate("/hr/expenses")} aria-label="Back">
+                <ArrowLeft className="h-5 w-5" />
+              </button>
+              <h1 className="hr-exp-approvals__title">Expense Approvals</h1>
+            </div>
+            <div className="hr-exp-approvals__period">
+              <button type="button" className="hr-exp-approvals__nav-btn" onClick={() => shiftMonth(-1)} aria-label="Previous month"><ChevronLeft className="h-5 w-5" /></button>
+              <span>{periodLabel}</span>
+              <button type="button" className="hr-exp-approvals__nav-btn" onClick={() => shiftMonth(1)} aria-label="Next month"><ChevronRight className="h-5 w-5" /></button>
+            </div>
+            <button type="button" className="hr-exp-approvals__approve-btn" disabled={!selected.length} onClick={handleApprove}>
+              Click Here To Approve
+            </button>
+          </div>
+
+          <div className="hr-exp-approvals__toolbar">
+            <EmployeeSelect value={employeeFilter} onChange={setEmployeeFilter} employees={employeeOptions} />
+            <div className="hr-exp-approvals__toolbar-right">
+              <div className="hr-exp-approvals__filter-wrap">
+                <button
+                  type="button"
+                  className="hr-exp-approvals__filter-btn"
+                  onClick={() => {
+                    setDraftCategory(categoryFilter);
+                    setDraftStatus(statusFilter);
+                    setDraftBranch(branchFilter);
+                    setDraftDepartment(departmentFilter);
+                    setFilterOpen((v) => !v);
+                  }}
+                >
+                  <Filter className="h-4 w-4" />
+                  Filter
+                </button>
+                <FilterPopover
+                  open={filterOpen}
+                  onClose={() => setFilterOpen(false)}
+                  category={draftCategory}
+                  status={draftStatus}
+                  branch={draftBranch}
+                  department={draftDepartment}
+                  onCategoryChange={setDraftCategory}
+                  onStatusChange={setDraftStatus}
+                  onBranchChange={setDraftBranch}
+                  onDepartmentChange={setDraftDepartment}
+                  onClear={() => {
+                    setDraftCategory("");
+                    setDraftStatus("");
+                    setDraftBranch("");
+                    setDraftDepartment("");
+                    setCategoryFilter("");
+                    setStatusFilter("");
+                    setBranchFilter("");
+                    setDepartmentFilter("");
+                    setFilterOpen(false);
+                    setPage(1);
+                  }}
+                  onApply={() => {
+                    setCategoryFilter(draftCategory);
+                    setStatusFilter(draftStatus);
+                    setBranchFilter(draftBranch);
+                    setDepartmentFilter(draftDepartment);
+                    setFilterOpen(false);
+                    setPage(1);
+                  }}
+                />
+              </div>
+              <button type="button" className="hr-exp-approvals__add-btn" onClick={() => setDrawerOpen(true)}>
+                <Plus className="h-4 w-4" />
+                Add Expense
+              </button>
+            </div>
+          </div>
+
+          <div className="hr-exp-approvals__table-wrap">
+            <table className="hr-exp-approvals__table">
+              <thead>
+                <tr>
+                  <th style={{ width: 40 }}>
+                    <label className="hr-exp-approvals__checkbox-target">
+                      <input
+                        type="checkbox"
+                        checked={allPageSelected}
+                        onChange={() => setSelected(allPageSelected ? [] : pagedRows.map((r) => r.id))}
+                        aria-label="Select all on page"
+                      />
+                    </label>
+                  </th>
+                  <th>Employee</th>
+                  <th>Branch</th>
+                  <th>Department</th>
+                  <th>Expense Category</th>
+                  <th>Expense Name</th>
+                  <th>Expense Date</th>
+                  <th>Amount</th>
+                  <th>Created By</th>
+                  <th>Updated By</th>
+                  <th>Status</th>
+                  <th>Waiting On</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pagedRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={13} className="hr-exp-approvals__empty">No records found</td>
+                  </tr>
+                ) : (
+                  pagedRows.map((row) => {
+                    const checked = selected.includes(row.id);
+                    return (
+                      <tr key={row.id}>
+                        <td>
+                          <label className="hr-exp-approvals__checkbox-target">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => setSelected((prev) => (checked ? prev.filter((id) => id !== row.id) : [...prev, row.id]))}
+                              aria-label={`Select ${row.employee_name || row.name}`}
+                            />
+                          </label>
+                        </td>
+                        <td>{row.employee_name || row.employee || "—"}</td>
+                        <td>{branchLabel(row.branch)}</td>
+                        <td>{departmentLabel(row.department)}</td>
+                        <td>{categoryLabel(row.category)}</td>
+                        <td>{row.name || row.expense_name || "—"}</td>
+                        <td>{formatDisplayDate(row.expense_date)}</td>
+                        <td>{formatAmount(row.amount)}</td>
+                        <td>{row.created_by || "—"}</td>
+                        <td>{row.updated_by || "—"}</td>
+                        <td><StatusBadge status={row.status} /></td>
+                        <td>{row.waiting_on || "—"}</td>
+                        <td>
+                          <ApprovalRowActionMenu
+                            row={row}
+                            onApprove={handleApproveRow}
+                            onReject={handleRejectRow}
+                            onDelete={handleDeleteRow}
+                          />
+                        </td>
+
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+
+            <div className="hr-exp-approvals__footer">
+              <div className="flex items-center gap-2">
+                <span>Show</span>
+                <select value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }} className="rounded border border-[#eff2f5] px-2 py-1 text-xs">
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                </select>
+                <span>Entries</span>
+              </div>
+              <span>Showing {showingFrom} to {showingTo} of {filteredRows.length} entries</span>
+              <div className="flex items-center gap-1">
+                <button type="button" className="hr-exp-approvals__page-btn" onClick={() => setPage(1)} disabled={currentPage <= 1} aria-label="First page"><ChevronsLeft className="h-4 w-4" /></button>
+                <button type="button" className="hr-exp-approvals__page-btn" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={currentPage <= 1} aria-label="Previous page"><ChevronLeft className="h-4 w-4" /></button>
+                <button type="button" className="hr-exp-approvals__page-btn hr-exp-approvals__page-btn--active">{currentPage}</button>
+                <button type="button" className="hr-exp-approvals__page-btn" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={currentPage >= totalPages} aria-label="Next page"><ChevronRight className="h-4 w-4" /></button>
+                <button type="button" className="hr-exp-approvals__page-btn" onClick={() => setPage(totalPages)} disabled={currentPage >= totalPages} aria-label="Last page"><ChevronsRight className="h-4 w-4" /></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </ListPageShell>
+
+      <AddExpenseDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} onSave={handleSave} employees={employees} />
+    </>
+  );
+}

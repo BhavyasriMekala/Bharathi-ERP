@@ -1,0 +1,1233 @@
+"""Main ERP dashboard — live KPIs from production data."""
+
+from calendar import monthrange
+from datetime import date, timedelta
+import time
+
+from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy.orm import Session
+
+_DASHBOARD_CACHE: dict[tuple, tuple[float, dict]] = {}
+_DASHBOARD_CACHE_TTL = 15.0  # seconds
+
+
+def invalidate_dashboard_cache(tenant_id: int | None = None) -> None:
+    global _DASHBOARD_CACHE
+    if tenant_id is None:
+        _DASHBOARD_CACHE.clear()
+    else:
+        _DASHBOARD_CACHE = {k: v for k, v in _DASHBOARD_CACHE.items() if k[0] != tenant_id}
+
+
+from app.models.machine import Machine
+from app.models.manufacturing_workflow import SalesJobCard
+from app.models.product import Product
+from app.models.production import Batch, DailyProductionReport, ProductionOrder, WorkOrder
+from app.models.inventory import InventoryItem, StockLevel, StockMovement, StockTransfer, StoreIssueRequest, Warehouse
+from app.models.procurement import MaterialRequest
+from app.models.quality import QualityInspection
+from app.models.procurement import GoodsReceipt
+from app.models.sales import Invoice, SalesOrder
+from app.models.user import User
+from app.services.notification_management_service import get_user_notifications
+
+
+def _user_role_names(user: User | None) -> list[str]:
+    if not user:
+        return []
+    from app.core.permissions import get_role_names, user_is_admin
+
+    if user_is_admin(user):
+        return ["Admin"]
+    return get_role_names(user)
+
+
+def _is_store_manager_only(user: User | None) -> bool:
+    roles = _user_role_names(user)
+    return "Store Manager" in roles and "Admin" not in roles
+
+
+def _format_inr(value: float) -> str:
+    try:
+        return f"₹{value:,.0f}"
+    except Exception:
+        return str(value)
+
+
+def _trend_pct(current: float, previous: float) -> tuple[float, bool]:
+    if previous <= 0:
+        if current > 0:
+            return 100.0, True
+        return 0.0, True
+    pct = round((current - previous) / previous * 100, 1)
+    return abs(pct), pct >= 0
+
+
+def _machine_status_breakdown(machines: list[Machine]) -> list[dict]:
+    buckets = {
+        "running": ("Running", "#22C55E", ("running", "active")),
+        "idle": ("Idle", "#3B82F6", ("idle", "stopped", "offline")),
+        "setup": ("Setup", "#F97316", ("setup", "changeover")),
+        "maintenance": ("Maintenance", "#EF4444", ("maintenance",)),
+        "breakdown": ("Breakdown", "#991B1B", ("breakdown", "down", "fault")),
+    }
+    counts = {key: 0 for key in buckets}
+    for machine in machines:
+        status = (machine.status or "idle").lower()
+        matched = False
+        for key, (_, _, statuses) in buckets.items():
+            if status in statuses:
+                counts[key] += 1
+                matched = True
+                break
+        if not matched:
+            counts["idle"] += 1
+    if not machines:
+        return [
+            {"name": label, "value": 0, "color": color}
+            for key, (label, color, _) in buckets.items()
+        ]
+    return [
+        {"name": label, "value": counts[key], "color": color}
+        for key, (label, color, _) in buckets.items()
+    ]
+
+
+def _top_machines(db: Session, tenant_id: int, machines: list[Machine], limit: int = 5) -> list[dict]:
+    today = date.today()
+    week_ago = today - timedelta(days=7)
+
+    machine_report_map: dict[int, tuple[float, float]] = {}
+    reports = list(
+        db.scalars(
+            select(DailyProductionReport).where(
+                DailyProductionReport.tenant_id == tenant_id,
+                DailyProductionReport.report_date >= week_ago,
+            )
+        ).all()
+    )
+    for r in reports:
+        if r.machine_id:
+            prod = float(r.produced_quantity or 0)
+            plan = float(r.planned_quantity or 0) or prod or 1.0
+            cur_prod, cur_plan = machine_report_map.get(r.machine_id, (0.0, 0.0))
+            machine_report_map[r.machine_id] = (cur_prod + prod, cur_plan + plan)
+
+    def _calc_utilization(m: Machine) -> float:
+        if m.efficiency_pct is not None and float(m.efficiency_pct) > 0:
+            return float(m.efficiency_pct)
+        if m.oee_pct is not None and float(m.oee_pct) > 0:
+            return float(m.oee_pct)
+
+        if m.id in machine_report_map:
+            produced, planned = machine_report_map[m.id]
+            if planned > 0:
+                return min(100.0, max(0.0, round((produced / planned) * 100, 1)))
+
+        return 0.0
+
+    ranked = sorted(machines, key=_calc_utilization, reverse=True)
+    if not ranked:
+        return []
+    result = []
+    for machine in ranked[:limit]:
+        util = _calc_utilization(machine)
+        result.append({
+            "id": machine.code or f"M-{machine.id}",
+            "name": machine.name,
+            "utilization": round(util, 1),
+        })
+    return result
+
+
+def _fetch_production_daily_buckets(
+    db: Session, tenant_id: int, start_date: date, end_date: date
+) -> dict[date, dict[str, float]]:
+    """Fetch and aggregate reports/work orders/batches/production orders ONCE for the
+    whole outer range, grouped by day at the database level (GROUP BY + SUM), instead
+    of re-querying full tables once per day/week/month/year bucket.
+
+    Returns: {date: {r_planned, r_actual, wo_planned, wo_actual, batch_actual, po_planned, po_actual}}
+    """
+    from collections import defaultdict
+
+    buckets: dict[date, dict[str, float]] = defaultdict(
+        lambda: {
+            "r_planned": 0.0,
+            "r_actual": 0.0,
+            "wo_planned": 0.0,
+            "wo_actual": 0.0,
+            "batch_actual": 0.0,
+            "po_planned": 0.0,
+            "po_actual": 0.0,
+        }
+    )
+
+    # 1. Daily production reports — aggregated per day in SQL.
+    report_rows = db.execute(
+        select(
+            DailyProductionReport.report_date,
+            func.coalesce(func.sum(DailyProductionReport.produced_quantity), 0),
+            func.coalesce(func.sum(DailyProductionReport.planned_quantity), 0),
+        )
+        .where(
+            DailyProductionReport.tenant_id == tenant_id,
+            DailyProductionReport.report_date >= start_date,
+            DailyProductionReport.report_date <= end_date,
+        )
+        .group_by(DailyProductionReport.report_date)
+    ).all()
+    for d, actual, planned in report_rows:
+        buckets[d]["r_actual"] += float(actual or 0)
+        buckets[d]["r_planned"] += float(planned or 0)
+
+    # 2. Work orders — effective date = planned_start if set, else created_at.
+    wo_eff_date = func.coalesce(func.date(WorkOrder.planned_start), func.date(WorkOrder.created_at))
+    wo_rows = db.execute(
+        select(
+            wo_eff_date,
+            func.coalesce(func.sum(WorkOrder.planned_quantity), 0),
+            func.coalesce(func.sum(WorkOrder.actual_quantity), 0),
+        )
+        .where(
+            WorkOrder.tenant_id == tenant_id,
+            wo_eff_date >= start_date,
+            wo_eff_date <= end_date,
+        )
+        .group_by(wo_eff_date)
+    ).all()
+    for d, planned, actual in wo_rows:
+        buckets[d]["wo_planned"] += float(planned or 0)
+        buckets[d]["wo_actual"] += float(actual or 0)
+
+    # 3. Batches — effective date = produced_at if set, else created_at.
+    batch_eff_date = func.coalesce(func.date(Batch.produced_at), func.date(Batch.created_at))
+    batch_rows = db.execute(
+        select(
+            batch_eff_date,
+            func.coalesce(func.sum(Batch.quantity), 0),
+        )
+        .where(
+            Batch.tenant_id == tenant_id,
+            batch_eff_date >= start_date,
+            batch_eff_date <= end_date,
+        )
+        .group_by(batch_eff_date)
+    ).all()
+    for d, qty in batch_rows:
+        buckets[d]["batch_actual"] += float(qty or 0)
+
+    # 4. Production orders — need status per-row (not summable), so pull raw rows
+    #    but only ONCE for the whole outer range instead of once per bucket.
+    po_eff_date = func.coalesce(func.date(ProductionOrder.start_date), func.date(ProductionOrder.created_at))
+    po_rows = db.execute(
+        select(
+            po_eff_date,
+            ProductionOrder.planned_quantity,
+            ProductionOrder.actual_quantity,
+            ProductionOrder.status,
+        ).where(
+            ProductionOrder.tenant_id == tenant_id,
+            po_eff_date >= start_date,
+            po_eff_date <= end_date,
+        )
+    ).all()
+    for d, planned, actual, status in po_rows:
+        if d is None:
+            continue
+        buckets[d]["po_planned"] += float(planned or 0)
+        st = (status or "").lower()
+        buckets[d]["po_actual"] += float(
+            actual or (planned if st in ("completed", "closed", "done") else 0) or 0
+        )
+
+    return buckets
+
+
+def _combine_bucket_range(
+    buckets: dict[date, dict[str, float]], start_date: date, end_date: date
+) -> tuple[float, float]:
+    """Combine pre-fetched daily buckets over [start_date, end_date] — no DB access."""
+    r_planned = r_actual = wo_planned = wo_actual = 0.0
+    batch_actual = po_planned = po_actual = 0.0
+
+    d = start_date
+    while d <= end_date:
+        b = buckets.get(d)
+        if b:
+            r_planned += b["r_planned"]
+            r_actual += b["r_actual"]
+            wo_planned += b["wo_planned"]
+            wo_actual += b["wo_actual"]
+            batch_actual += b["batch_actual"]
+            po_planned += b["po_planned"]
+            po_actual += b["po_actual"]
+        d += timedelta(days=1)
+
+    if r_planned > 0:
+        planned = r_planned
+    elif wo_planned > 0:
+        planned = wo_planned
+    elif po_planned > 0:
+        planned = po_planned
+    else:
+        planned = 0.0
+
+    if r_actual > 0:
+        actual = r_actual
+    elif wo_actual > 0:
+        actual = wo_actual
+    elif batch_actual > 0:
+        actual = batch_actual
+    elif po_actual > 0:
+        actual = po_actual
+    else:
+        actual = 0.0
+
+    return planned, actual
+
+
+def _production_overview(
+    buckets: dict[date, dict[str, float]], today: date, days: int = 7
+) -> list[dict]:
+    overview = []
+    for i in range(days - 1, -1, -1):
+        d = today - timedelta(days=i)
+        planned, actual = _combine_bucket_range(buckets, d, d)
+        overview.append({
+            "date": d.strftime("%d %b"),
+            "planned": int(planned),
+            "actual": int(actual),
+        })
+    return overview
+
+
+def _weekly_overview(buckets: dict[date, dict[str, float]], today: date) -> list[dict]:
+    rows = []
+    for week in range(4, -1, -1):
+        start = today - timedelta(days=week * 7)
+        end = start + timedelta(days=6)
+        planned, actual = _combine_bucket_range(buckets, start, end)
+        rows.append({
+            "date": f"Week {5 - week}",
+            "planned": int(planned),
+            "actual": int(actual),
+        })
+    return rows
+
+
+def _monthly_overview(buckets: dict[date, dict[str, float]], today: date) -> list[dict]:
+    rows = []
+    for month_offset in range(5, -1, -1):
+        y = today.year
+        m = today.month - month_offset
+        while m <= 0:
+            m += 12
+            y -= 1
+        month_start = date(y, m, 1)
+        if m == 12:
+            month_end = date(y, 12, 31)
+        else:
+            month_end = date(y, m + 1, 1) - timedelta(days=1)
+        planned, actual = _combine_bucket_range(buckets, month_start, month_end)
+        rows.append({
+            "date": month_start.strftime("%b"),
+            "planned": int(planned),
+            "actual": int(actual),
+        })
+    return rows
+
+
+def _yearly_overview(buckets: dict[date, dict[str, float]], today: date) -> list[dict]:
+    rows = []
+    for year_offset in range(4, -1, -1):
+        year_val = today.year - year_offset
+        year_start = date(year_val, 1, 1)
+        year_end = date(year_val, 12, 31)
+        planned, actual = _combine_bucket_range(buckets, year_start, year_end)
+        rows.append({
+            "date": str(year_val),
+            "planned": int(planned),
+            "actual": int(actual),
+        })
+    return rows
+
+
+PIPELINE_EXCLUDED = ("cancelled", "canceled", "rejected")
+
+
+def _fiscal_year_bounds(today: date) -> tuple[date, date]:
+    """Indian fiscal year: Apr 1 – Mar 31."""
+    if today.month >= 4:
+        return date(today.year, 4, 1), date(today.year + 1, 3, 31)
+    return date(today.year - 1, 4, 1), date(today.year, 3, 31)
+
+
+def _fiscal_month_starts(fy_start: date) -> list[date]:
+    months: list[date] = []
+    y, m = fy_start.year, fy_start.month
+    for _ in range(12):
+        months.append(date(y, m, 1))
+        if m == 12:
+            y, m = y + 1, 1
+        else:
+            m += 1
+    return months
+
+
+def _monthly_completion_series(
+    db: Session,
+    tenant_id: int,
+    model,
+    *,
+    done_statuses: tuple[str, ...],
+    status_attr,
+    date_attr,
+    fy_start: date,
+    fy_end: date,
+) -> list[dict]:
+    bind = db.get_bind()
+    is_sqlite = bind.dialect.name == "sqlite" if bind else False
+    if is_sqlite:
+        month_expr = func.strftime("%Y-%m", date_attr)
+    else:
+        month_expr = func.to_char(date_attr, "YYYY-MM")
+
+    counts_by_ym: dict[str, int] = {}
+    try:
+        stmt = (
+            select(month_expr, func.count(model.id))
+            .where(
+                model.tenant_id == tenant_id,
+                status_attr.in_(done_statuses),
+                date_attr.isnot(None),
+                func.date(date_attr) >= fy_start,
+                func.date(date_attr) <= fy_end,
+            )
+            .group_by(month_expr)
+        )
+        for ym, cnt in db.execute(stmt).all():
+            if ym:
+                counts_by_ym[str(ym)] = int(cnt or 0)
+    except Exception:
+        counts_by_ym = {}
+
+    rows: list[dict] = []
+    for month_start in _fiscal_month_starts(fy_start):
+        last_day = monthrange(month_start.year, month_start.month)[1]
+        month_end = date(month_start.year, month_start.month, last_day)
+        if month_end < fy_start or month_start > fy_end:
+            continue
+        ym_key = month_start.strftime("%Y-%m")
+        count = counts_by_ym.get(ym_key, 0)
+        rows.append(
+            {
+                "month": month_start.strftime("%b"),
+                "year": month_start.year,
+                "label": month_start.strftime("%b %Y"),
+                "count": count,
+            }
+        )
+    return rows
+
+
+def _get_admin_production_widgets(db: Session, tenant_id: int, today: date) -> dict:
+    """Production summary, charts, and lists for the Admin dashboard."""
+    po_base = ProductionOrder.tenant_id == tenant_id
+    po_pending_statuses = ("planned", "pending", "draft")
+    po_in_progress_statuses = ("in_progress", "running", "active")
+    po_done_statuses = ("completed", "closed", "done")
+
+    fy_start, fy_end = _fiscal_year_bounds(today)
+    completed_mo_chart = _monthly_completion_series(
+        db,
+        tenant_id,
+        ProductionOrder,
+        done_statuses=po_done_statuses,
+        status_attr=ProductionOrder.status,
+        date_attr=ProductionOrder.updated_at,
+        fy_start=fy_start,
+        fy_end=fy_end,
+    )
+    completed_jc_chart = _monthly_completion_series(
+        db,
+        tenant_id,
+        SalesJobCard,
+        done_statuses=("COMPLETED",),
+        status_attr=SalesJobCard.workflow_stage,
+        date_attr=SalesJobCard.updated_at,
+        fy_start=fy_start,
+        fy_end=fy_end,
+    )
+
+    item_rows = db.execute(
+        select(
+            ProductionOrder.id,
+            ProductionOrder.order_number,
+            ProductionOrder.planned_quantity,
+            ProductionOrder.status,
+            ProductionOrder.due_date,
+            Product.name,
+            Product.sku,
+        )
+        .join(Product, Product.id == ProductionOrder.product_id)
+        .where(
+            po_base,
+            ProductionOrder.status.in_(po_pending_statuses),
+        )
+        .order_by(ProductionOrder.due_date.asc().nullslast(), ProductionOrder.created_at.desc())
+        .limit(12)
+    ).all()
+    items_to_manufacture = [
+        {
+            "id": row.id,
+            "order_number": row.order_number,
+            "product": row.name or row.sku or "—",
+            "quantity": float(row.planned_quantity or 0),
+            "status": row.status,
+            "due_date": row.due_date.date().isoformat() if row.due_date else None,
+        }
+        for row in item_rows
+    ]
+
+    wc_rows = db.execute(
+        select(Machine.work_center, func.count(WorkOrder.id))
+        .join(WorkOrder, WorkOrder.machine_id == Machine.id)
+        .where(
+            Machine.tenant_id == tenant_id,
+            WorkOrder.tenant_id == tenant_id,
+            Machine.work_center.isnot(None),
+            Machine.work_center != "",
+            ~WorkOrder.status.in_(("completed", "closed", "done", "cancelled")),
+        )
+        .group_by(Machine.work_center)
+        .order_by(func.count(WorkOrder.id).desc())
+        .limit(12)
+    ).all()
+    work_center_order_status = [
+        {"work_center": row[0], "pending_orders": int(row[1] or 0)} for row in wc_rows
+    ]
+
+    return {
+        "completed_mo_chart": completed_mo_chart,
+        "completed_mo_total": sum(p["count"] for p in completed_mo_chart),
+        "completed_job_cards_chart": completed_jc_chart,
+        "completed_job_cards_total": sum(p["count"] for p in completed_jc_chart),
+        "items_to_manufacture": items_to_manufacture,
+        "work_center_order_status": work_center_order_status,
+        "fiscal_year_label": f"{fy_start.year} – {fy_end.year}",
+    }
+
+
+def _get_production_pipeline(db: Session, tenant_id: int) -> dict:
+    """Work-order counts by pipeline stage for the Admin dashboard strip."""
+    from app.services.dashboard_production_kpis import get_production_pipeline_counts
+
+    return get_production_pipeline_counts(db, tenant_id)
+
+
+def _get_quick_actions_summary(db: Session, tenant_id: int, today: date) -> dict:
+    """Live operational counts for Admin dashboard Quick Actions (tenant-scoped)."""
+    wo_done = ("completed", "closed", "done")
+    wo_pending_statuses = ("planned", "pending", "on_hold", "hold", "paused")
+    wo_in_progress_statuses = ("in_progress", "running", "active")
+    wo_base = WorkOrder.tenant_id == tenant_id
+    wo_active_base = and_(wo_base, ~WorkOrder.status.in_(("cancelled", "canceled", "rejected")))
+
+    wo_row = db.execute(
+        select(
+            func.count(case((wo_active_base, WorkOrder.id))),
+            func.count(case((and_(wo_active_base, func.date(WorkOrder.created_at) == today), WorkOrder.id))),
+            func.count(case((WorkOrder.status.in_(wo_pending_statuses), WorkOrder.id))),
+            func.count(case((WorkOrder.status.in_(wo_in_progress_statuses), WorkOrder.id))),
+            func.count(
+                case(
+                    (
+                        and_(
+                            WorkOrder.status.in_(wo_done),
+                            or_(func.date(WorkOrder.updated_at) == today, func.date(WorkOrder.created_at) == today),
+                        ),
+                        WorkOrder.id,
+                    )
+                )
+            ),
+        ).where(wo_base)
+    ).one()
+    work_orders = {
+        "total": int(wo_row[0] or 0),
+        "today": int(wo_row[1] or 0),
+        "pending": int(wo_row[2] or 0),
+        "in_progress": int(wo_row[3] or 0),
+        "completed": int(wo_row[4] or 0),
+    }
+
+    po_base = ProductionOrder.tenant_id == tenant_id
+    po_pending_statuses = ("planned", "pending", "draft")
+    po_in_progress_statuses = ("in_progress", "running", "active")
+    po_done_statuses = ("completed", "closed", "done")
+
+    po_row = db.execute(
+        select(
+            func.count(
+                case(
+                    (
+                        and_(
+                            ProductionOrder.status != "cancelled",
+                            or_(
+                                func.date(ProductionOrder.start_date) == today,
+                                and_(
+                                    ProductionOrder.start_date.is_(None),
+                                    func.date(ProductionOrder.created_at) == today,
+                                ),
+                            ),
+                        ),
+                        ProductionOrder.id,
+                    )
+                )
+            ),
+            func.count(case((ProductionOrder.status.in_(po_in_progress_statuses), ProductionOrder.id))),
+            func.count(
+                case(
+                    (
+                        and_(
+                            ProductionOrder.status.in_(po_done_statuses),
+                            or_(
+                                func.date(ProductionOrder.updated_at) == today,
+                                func.date(ProductionOrder.created_at) == today,
+                            ),
+                        ),
+                        ProductionOrder.id,
+                    )
+                )
+            ),
+            func.count(case((ProductionOrder.status.in_(po_pending_statuses), ProductionOrder.id))),
+        ).where(po_base)
+    ).one()
+
+    produced_qty_today = int(
+        db.scalar(
+            select(func.coalesce(func.sum(DailyProductionReport.produced_quantity), 0)).where(
+                DailyProductionReport.tenant_id == tenant_id,
+                DailyProductionReport.report_date == today,
+            )
+        )
+        or 0
+    )
+
+    production = {
+        "today": int(po_row[0] or 0),
+        "in_progress": int(po_row[1] or 0),
+        "completed": int(po_row[2] or 0),
+        "pending": int(po_row[3] or 0),
+        "produced_quantity": produced_qty_today,
+    }
+
+    out_types = ("out", "issue", "material_issue")
+    issued_today = int(
+        db.scalar(
+            select(func.count(StockMovement.id)).where(
+                StockMovement.tenant_id == tenant_id,
+                StockMovement.movement_type.in_(out_types),
+                func.date(StockMovement.created_at) == today,
+            )
+        )
+        or 0
+    )
+    pending_issues = int(
+        db.scalar(
+            select(func.count(StoreIssueRequest.id)).where(
+                StoreIssueRequest.tenant_id == tenant_id,
+                StoreIssueRequest.status == "pending",
+            )
+        )
+        or 0
+    ) + int(
+        db.scalar(
+            select(func.count(MaterialRequest.id)).where(
+                MaterialRequest.tenant_id == tenant_id,
+                MaterialRequest.approval_status == "pending",
+            )
+        )
+        or 0
+    )
+    material_issue = {
+        "today": issued_today + pending_issues,
+        "pending": pending_issues,
+        "issued": issued_today,
+    }
+
+    st_pending_statuses = ("draft", "pending", "pending_approval")
+    st_transit_statuses = ("in_transit",)
+    st_done_statuses = ("completed", "received")
+    st_base = StockTransfer.tenant_id == tenant_id
+
+    st_row = db.execute(
+        select(
+            func.count(case((StockTransfer.status.in_(st_pending_statuses), StockTransfer.id))),
+            func.count(case((StockTransfer.status.in_(st_transit_statuses), StockTransfer.id))),
+            func.count(case((StockTransfer.status.in_(st_done_statuses), StockTransfer.id))),
+            func.count(
+                case(
+                    (
+                        or_(
+                            func.date(StockTransfer.created_at) == today,
+                            StockTransfer.transfer_date == today,
+                        ),
+                        StockTransfer.id,
+                    )
+                )
+            ),
+        ).where(st_base)
+    ).one()
+    stock_transfer = {
+        "pending": int(st_row[0] or 0),
+        "in_transit": int(st_row[1] or 0),
+        "completed": int(st_row[2] or 0),
+        "today": int(st_row[3] or 0),
+    }
+
+    qc_base = QualityInspection.tenant_id == tenant_id
+    qc_row = db.execute(
+        select(
+            func.count(case((QualityInspection.status.in_(("pending", "open", "in_review")), QualityInspection.id))),
+            func.count(
+                case(
+                    (
+                        or_(
+                            QualityInspection.result.in_(("pass", "passed")),
+                            QualityInspection.status.in_(("passed", "approved")),
+                        ),
+                        QualityInspection.id,
+                    )
+                )
+            ),
+            func.count(
+                case(
+                    (
+                        or_(
+                            QualityInspection.result.in_(("fail", "failed")),
+                            QualityInspection.status.in_(("failed", "rejected")),
+                        ),
+                        QualityInspection.id,
+                    )
+                )
+            ),
+            func.count(
+                case(
+                    (
+                        or_(
+                            QualityInspection.result.in_(("rework", "rework_required", "conditional")),
+                            QualityInspection.status == "rework",
+                        ),
+                        QualityInspection.id,
+                    )
+                )
+            ),
+            func.count(
+                case(
+                    (
+                        QualityInspection.inspection_date == today,
+                        QualityInspection.id,
+                    )
+                )
+            ),
+        ).where(qc_base)
+    ).one()
+    quality_control = {
+        "pending": int(qc_row[0] or 0),
+        "passed": int(qc_row[1] or 0),
+        "failed": int(qc_row[2] or 0),
+        "rework": int(qc_row[3] or 0),
+        "today": int(qc_row[4] or 0),
+    }
+
+    production_reports_today = int(
+        db.scalar(
+            select(func.count(DailyProductionReport.id)).where(
+                DailyProductionReport.tenant_id == tenant_id,
+                DailyProductionReport.report_date == today,
+            )
+        )
+        or 0
+    )
+    inventory_reports_today = int(
+        db.scalar(
+            select(func.count(StockMovement.id)).where(
+                StockMovement.tenant_id == tenant_id,
+                func.date(StockMovement.created_at) == today,
+            )
+        )
+        or 0
+    )
+    sales_reports_today = int(
+        db.scalar(
+            select(func.count(Invoice.id)).where(
+                Invoice.tenant_id == tenant_id,
+                Invoice.issue_date == today,
+            )
+        )
+        or 0
+    )
+    quality_reports_today = quality_control["today"]
+    reports = {
+        "today_total": production_reports_today + inventory_reports_today + sales_reports_today + quality_reports_today,
+        "categories": [
+            {"key": "production", "label": "Production", "count": production_reports_today},
+            {"key": "inventory", "label": "Inventory", "count": inventory_reports_today},
+            {"key": "sales", "label": "Sales", "count": sales_reports_today},
+            {"key": "quality", "label": "Quality", "count": quality_reports_today},
+        ],
+    }
+
+    return {
+        "work_orders": work_orders,
+        "production": production,
+        "material_issue": material_issue,
+        "stock_transfer": stock_transfer,
+        "quality_control": quality_control,
+        "reports": reports,
+        "as_of": today.isoformat(),
+    }
+
+
+def get_erp_dashboard(
+    db: Session,
+    tenant_id: int,
+    user: User | None = None,
+    *,
+    include_manufacturing_workflow: bool = True,
+) -> dict:
+    user_id = getattr(user, "id", None)
+    active_role = getattr(user, "active_role", None) or getattr(user, "role", None)
+    cache_key = (tenant_id, user_id, str(active_role), include_manufacturing_workflow)
+    now_ts = time.time()
+    cached = _DASHBOARD_CACHE.get(cache_key)
+    if cached and (now_ts - cached[0]) < _DASHBOARD_CACHE_TTL:
+        return cached[1]
+
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+
+    total_orders = int(
+        db.scalar(
+            select(func.count(ProductionOrder.id)).where(ProductionOrder.tenant_id == tenant_id)
+        ) or 0
+    )
+    # Count pending Work Orders: any WO that is NOT completed/closed/done/cancelled
+    pending_orders = int(
+        db.scalar(
+            select(func.count(WorkOrder.id)).where(
+                WorkOrder.tenant_id == tenant_id,
+                WorkOrder.status.notin_(("completed", "closed", "done", "cancelled", "rejected")),
+            )
+        ) or 0
+    )
+
+    from app.services.production_service import list_daily_production_reports
+
+    today_reports = list_daily_production_reports(db, tenant_id, date_from=today, date_to=today, user=user)
+    yesterday_reports = list_daily_production_reports(db, tenant_id, date_from=yesterday, date_to=yesterday, user=user)
+
+    today_started_orders = int(
+        db.scalar(
+            select(func.count(ProductionOrder.id)).where(
+                ProductionOrder.tenant_id == tenant_id,
+                ProductionOrder.status != "cancelled",
+                or_(
+                    func.date(ProductionOrder.start_date) == today,
+                    and_(
+                        ProductionOrder.start_date.is_(None),
+                        func.date(ProductionOrder.created_at) == today,
+                    ),
+                ),
+            )
+        ) or 0
+    )
+    yesterday_started_orders = int(
+        db.scalar(
+            select(func.count(ProductionOrder.id)).where(
+                ProductionOrder.tenant_id == tenant_id,
+                ProductionOrder.status != "cancelled",
+                or_(
+                    func.date(ProductionOrder.start_date) == yesterday,
+                    and_(
+                        ProductionOrder.start_date.is_(None),
+                        func.date(ProductionOrder.created_at) == yesterday,
+                    ),
+                ),
+            )
+        ) or 0
+    )
+    today_production = today_started_orders
+    yesterday_production = yesterday_started_orders
+    good_qty = int(sum(float(r.get("produced_quantity", 0) or 0) for r in today_reports))
+    reject_qty = int(sum(float(r.get("scrap_quantity", 0) or 0) for r in today_reports))
+
+    if good_qty <= 0:
+        good_qty = int(
+            db.scalar(
+                select(func.coalesce(func.sum(WorkOrder.actual_quantity), 0)).where(
+                    WorkOrder.tenant_id == tenant_id,
+                )
+            )
+            or 0
+        )
+
+    machines = list(db.scalars(select(Machine).where(Machine.tenant_id == tenant_id)).all())
+    total_machines = len(machines)
+    running_machines = sum(1 for m in machines if (m.status or "").lower() in ("running", "active"))
+
+    wo_overview_row = db.execute(
+        select(
+            func.count(WorkOrder.id),
+            func.count(case((WorkOrder.status.in_(("completed", "closed", "done")), WorkOrder.id))),
+            func.count(case((WorkOrder.status.in_(("on_hold", "paused", "hold")), WorkOrder.id))),
+            func.count(case((WorkOrder.status.in_(("in_progress", "running")), WorkOrder.id))),
+        ).where(WorkOrder.tenant_id == tenant_id)
+    ).one()
+    total_work_orders = int(wo_overview_row[0] or 0)
+    completed_orders = int(wo_overview_row[1] or 0)
+    on_hold_orders = int(wo_overview_row[2] or 0)
+    in_progress_orders = int(wo_overview_row[3] or 0)
+
+    prod_trend, prod_up = _trend_pct(today_production, yesterday_production)
+    yesterday_good = int(sum(float(r.get("produced_quantity", 0) or 0) for r in yesterday_reports))
+    good_trend, good_up = _trend_pct(good_qty, yesterday_good)
+    yesterday_reject = int(sum(float(r.get("scrap_quantity", 0) or 0) for r in yesterday_reports))
+    reject_trend, reject_up = _trend_pct(reject_qty, yesterday_reject)
+
+    # Fetch every day/week/month/year overview from ONE pre-aggregated query set
+    # instead of re-hitting the DB for each of the 23 individual buckets.
+    _overview_start = date(today.year - 4, 1, 1)
+    _daily_buckets = _fetch_production_daily_buckets(db, tenant_id, _overview_start, today)
+    overview = _production_overview(_daily_buckets, today, 7)
+
+    # Inventory blocks for dashboard (real active stock only)
+    items = list(
+        db.scalars(
+            select(InventoryItem).where(
+                InventoryItem.tenant_id == tenant_id,
+                InventoryItem.is_active.is_(True),
+            )
+        ).all()
+    )
+    item_ids = [i.id for i in items]
+    levels = list(db.scalars(select(StockLevel).where(StockLevel.item_id.in_(item_ids))).all()) if item_ids else []
+    level_by_item: dict[int, float] = {}
+    for sl in levels:
+        level_by_item[sl.item_id] = level_by_item.get(sl.item_id, 0) + float(sl.quantity or 0)
+
+    raw_qty = fg_qty = wip_qty = 0.0
+    raw_value = fg_value = 0.0
+    raw_count = fg_count = wip_count = 0
+    low_stock = 0
+    for item in items:
+        qty = level_by_item.get(item.id, 0)
+        cost = float(item.unit_cost or 0) * qty
+        itype = (getattr(item, "item_type", None) or getattr(item, "category", None) or "").lower()
+        if "finish" in itype or itype in ("fg", "finished_good", "finished"):
+            fg_qty += qty
+            fg_value += cost
+            fg_count += 1
+        elif "wip" in itype:
+            wip_qty += qty
+            wip_count += 1
+        else:
+            raw_qty += qty
+            raw_value += cost
+            raw_count += 1
+        reorder = int(getattr(item, "reorder_level", 0) or 0)
+        if reorder and qty <= reorder:
+            low_stock += 1
+
+    warehouses = list(db.scalars(select(Warehouse).where(Warehouse.tenant_id == tenant_id)).all())
+    warehouse_locations = []
+    wh_qtys = []
+    for wh in warehouses[:8]:
+        wh_levels = [sl for sl in levels if sl.warehouse_id == wh.id]
+        qty = sum(float(sl.quantity or 0) for sl in wh_levels)
+        wh_qtys.append((wh, qty))
+    total_wh_qty = sum(q for _, q in wh_qtys) or 1.0
+    wh_colors = ["#2563EB", "#22C55E", "#F59E0B", "#A855F7", "#EF4444", "#06B6D4", "#64748B", "#EC4899"]
+    for i, (wh, qty) in enumerate(wh_qtys):
+        warehouse_locations.append({
+            "id": wh.id,
+            "name": wh.name,
+            "code": getattr(wh, "code", None),
+            "quantity": qty,
+            "pct": round((qty / total_wh_qty) * 100, 1),
+            "color": wh_colors[i % len(wh_colors)],
+        })
+
+    inventory_blocks = [
+        {"key": "raw", "label": "Raw Materials", "count": raw_count, "quantity": int(raw_qty), "value": round(raw_value, 2), "color": "#2563EB", "icon": "boxes"},
+        {"key": "wip", "label": "WIP", "count": wip_count, "quantity": int(wip_qty), "value": 0, "color": "#F59E0B", "icon": "cog"},
+        {"key": "fg", "label": "Finished Goods", "count": fg_count, "quantity": int(fg_qty), "value": round(fg_value, 2), "color": "#22C55E", "icon": "package"},
+        {"key": "low_stock", "label": "Low Stock Items", "count": low_stock, "quantity": low_stock, "value": 0, "color": "#EF4444", "icon": "alert"},
+    ]
+
+    so_row = db.execute(
+        select(
+            func.count(case((SalesOrder.order_date == today, SalesOrder.id))),
+            func.count(case((and_(SalesOrder.shipped.is_(True), SalesOrder.order_date == today), SalesOrder.id))),
+        ).where(SalesOrder.tenant_id == tenant_id)
+    ).one()
+    so_today = int(so_row[0] or 0)
+    shipped_today = int(so_row[1] or 0)
+    inv_today = int(
+        db.scalar(
+            select(func.count(Invoice.id)).where(
+                Invoice.tenant_id == tenant_id,
+                Invoice.issue_date == today,
+            )
+        )
+        or 0
+    )
+    stock_moves_today = 0
+    try:
+        stock_moves_today = int(
+            db.scalar(
+                select(func.count(StockMovement.id)).where(
+                    StockMovement.tenant_id == tenant_id,
+                    func.date(StockMovement.created_at) == today,
+                )
+            )
+            or 0
+        )
+    except Exception:
+        stock_moves_today = int(
+            db.scalar(
+                select(func.count(StockMovement.id)).where(
+                    StockMovement.tenant_id == tenant_id
+                )
+            )
+            or 0
+        )
+
+    users_count = int(db.scalar(select(func.count(User.id)).where(User.tenant_id == tenant_id)) or 0)
+    total_planned_today = int(sum(float(r.get("planned_quantity", 0) or 0) for r in today_reports))
+    eff_pct = round((good_qty / (good_qty + reject_qty) * 100), 1) if (good_qty + reject_qty) > 0 else 0.0
+    target_pct = round((good_qty / total_planned_today * 100), 1) if total_planned_today > 0 else 0.0
+
+    todays_summary = [
+        {"key": "manPower", "label": "Man Power", "value": str(users_count), "icon": "users", "unit": "users"},
+        {"key": "workingHours", "label": "Working Hours", "value": "0", "icon": "clock", "unit": "hrs"},
+        {"key": "powerConsumption", "label": "Power Consumption", "value": "0", "icon": "zap", "unit": "kWh"},
+        {"key": "productionEfficiency", "label": "Production Efficiency", "value": f"{eff_pct}%", "icon": "gauge", "unit": "%"},
+        {"key": "targetAchievement", "label": "Target Achievement", "value": f"{target_pct}%", "icon": "target", "unit": "%"},
+        {"key": "stockMovements", "label": "Stock Movements", "value": str(stock_moves_today), "icon": "boxes", "unit": "moves"},
+    ]
+
+    if user:
+        from app.core.permissions import get_role_names
+        from app.services.operator_scope import is_shop_floor_operator
+
+        role_names = {r.strip().lower() for r in get_role_names(user) if r}
+        is_prod_manager = "production manager" in role_names
+        if is_shop_floor_operator(user):
+            plant_summary = {
+                "manPower",
+                "workingHours",
+                "powerConsumption",
+                "productionEfficiency",
+                "targetAchievement",
+                "stockMovements",
+            }
+            todays_summary = [item for item in todays_summary if item.get("key") not in plant_summary]
+        elif is_prod_manager:
+            todays_summary = [
+                item for item in todays_summary if item["key"] not in ("powerConsumption", "stockMovements")
+            ]
+
+    production_orders = list(
+        db.scalars(
+            select(ProductionOrder)
+            .where(ProductionOrder.tenant_id == tenant_id)
+            .order_by(ProductionOrder.id.desc())
+            .limit(5)
+        ).all()
+    )
+    recent_orders = [
+        {
+            "id": o.id,
+            "order_number": o.order_number,
+            "status": o.status,
+            "planned_quantity": float(o.planned_quantity),
+            "customer_name": o.customer_name,
+        }
+        for o in production_orders
+    ]
+
+    work_orders = list(
+        db.scalars(
+            select(WorkOrder)
+            .where(WorkOrder.tenant_id == tenant_id)
+            .order_by(WorkOrder.id.desc())
+            .limit(5)
+        ).all()
+    )
+    recent_work_orders = []
+    for wo in work_orders:
+        product_name = "—"
+        if wo.production_order and wo.production_order.product:
+            product_name = wo.production_order.product.name
+        recent_work_orders.append({
+            "id": wo.id,
+            "wo": wo.work_order_number,
+            "product": product_name,
+            "qty": float(wo.planned_quantity or 0),
+            "status": wo.status,
+            "due": wo.planned_end.isoformat() if wo.planned_end else None,
+        })
+
+    alerts_feed = []
+    try:
+        from app.services.alert_service import list_alerts as list_tenant_alerts
+
+        alert_rows, _, _ = list_tenant_alerts(
+            db, tenant_id, status="active", user=user, page=1, page_size=5
+        )
+        severity_colors = {
+            "critical": "#EF4444",
+            "high": "#F97316",
+            "medium": "#3B82F6",
+            "low": "#22C55E",
+        }
+        alerts_feed = [
+            {
+                "id": a.id,
+                "message": a.title or a.message,
+                "time": a.triggered_at.isoformat() if a.triggered_at else "Just now",
+                "color": severity_colors.get((a.severity or "").lower(), "#3B82F6"),
+                "icon": "alert",
+                "link": a.link or "/alerts",
+            }
+            for a in alert_rows
+        ]
+    except Exception:
+        alerts_feed = []
+
+    total_wo = total_work_orders
+    progress_pct = round((completed_orders / total_wo) * 100) if total_wo else 0
+    machine_pct = round(running_machines / total_machines * 100) if total_machines else 0
+
+    inventory_value = round(raw_value + fg_value, 2)
+    warehouse_count = len(warehouses)
+
+    grn_today = 0
+    pending_grn_qc = 0
+    try:
+        grn_row = db.execute(
+            select(
+                func.count(case((GoodsReceipt.receipt_date == today, GoodsReceipt.id))),
+                func.count(case((GoodsReceipt.qc_status.in_(("pending", "hold")), GoodsReceipt.id))),
+            ).where(GoodsReceipt.tenant_id == tenant_id)
+        ).one()
+        grn_today = int(grn_row[0] or 0)
+        pending_grn_qc = int(grn_row[1] or 0)
+    except Exception:
+        grn_today = 0
+        pending_grn_qc = 0
+
+    pending_dispatch = int(
+        db.scalar(
+            select(func.count(SalesOrder.id)).where(
+                SalesOrder.tenant_id == tenant_id,
+                SalesOrder.shipped.is_(False),
+                SalesOrder.status.in_(("confirmed", "in_production", "ready", "packed", "open")),
+            )
+        )
+        or 0
+    )
+
+    try:
+        from app.services.approval_service import get_pending_approvals
+
+        pending_approvals_total = int(get_pending_approvals(db, tenant_id).get("total") or 0)
+    except Exception:
+        pending_approvals_total = 0
+
+    payload = {
+        "kpi_cards": [],
+        "production_overview": overview,
+        "production_overview_weekly": _weekly_overview(_daily_buckets, today),
+        "production_overview_monthly": _monthly_overview(_daily_buckets, today),
+        "production_overview_yearly": _yearly_overview(_daily_buckets, today),
+        "shop_floor_status": _machine_status_breakdown(machines),
+        "top_machines": _top_machines(db, tenant_id, machines),
+        "orders_overview": {
+            "total": total_wo,
+            "inProgress": in_progress_orders,
+            "completed": completed_orders,
+            "onHold": on_hold_orders,
+            "progress": progress_pct,
+        },
+        "alerts_feed": alerts_feed,
+        "recent_work_orders": recent_work_orders,
+        "shop_floor": {},
+        "recent_production_orders": recent_orders,
+        "inventory_blocks": inventory_blocks,
+        "warehouse_locations": warehouse_locations,
+        "todays_summary": todays_summary,
+        "quick_actions_summary": _get_quick_actions_summary(db, tenant_id, today),
+        "production_pipeline": _get_production_pipeline(db, tenant_id),
+        "admin_production_widgets": _get_admin_production_widgets(db, tenant_id, today),
+        "date": today.isoformat(),
+        "dashboard_profile": "admin",
+        "visible_sections": [
+            "kpi",
+            "production_overview",
+            "shop_floor",
+            "top_machines",
+            "orders_overview",
+            "inventory",
+            "alerts",
+            "quick_actions",
+            "production_pipeline",
+            "recent_work_orders",
+            "todays_summary",
+        ],
+    }
+
+    from app.services.dashboard_role_kpis import apply_role_dashboard
+
+    role_ctx = {
+        "today": today,
+        "total_orders": total_orders,
+        "today_production": today_production,
+        "prod_trend": prod_trend,
+        "prod_up": prod_up,
+        "running_machines": running_machines,
+        "total_machines": total_machines,
+        "machine_pct": machine_pct,
+        "low_stock": low_stock,
+        "pending_orders": pending_orders,
+        "reject_qty": reject_qty,
+        "reject_trend": reject_trend,
+        "reject_up": reject_up,
+        "eff_pct": eff_pct,
+        "total_planned_today": total_planned_today,
+        "todays_target": total_planned_today,
+        "oee_pct": machine_pct,
+        "inventory_value": inventory_value,
+        "raw_count": raw_count,
+        "raw_qty": raw_qty,
+        "fg_count": fg_count,
+        "fg_qty": fg_qty,
+        "stock_moves_today": stock_moves_today,
+        "grn_today": grn_today,
+        "pending_grn_qc": pending_grn_qc,
+        "pending_dispatch": pending_dispatch,
+        "warehouse_count": warehouse_count,
+        "pending_approvals_total": pending_approvals_total,
+    }
+    res = apply_role_dashboard(
+        payload,
+        db,
+        tenant_id,
+        user,
+        role_ctx,
+        include_manufacturing_workflow=include_manufacturing_workflow,
+    )
+    _DASHBOARD_CACHE[cache_key] = (now_ts, res)
+    return res

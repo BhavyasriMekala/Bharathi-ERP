@@ -1,0 +1,275 @@
+import { useState, useEffect, useRef } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
+import {
+  ChevronDown,
+  Maximize2,
+  Minimize2,
+  Menu,
+  Search,
+  X,
+} from "lucide-react";
+
+import useAuth from "../../hooks/useAuth";
+import GlobalSearch from "../common/GlobalSearch";
+import BrandLogo from "../common/BrandLogo";
+import AppPageTitle from "../common/AppPageTitle";
+import Breadcrumbs, {
+  getPageTitle,
+  getVisibleBreadcrumbItems,
+  shouldShowNavbarBreadcrumb,
+} from "../common/Breadcrumbs";
+import ClientProfilePanel from "../common/ClientProfilePanel";
+import LogoutConfirmModal from "../common/LogoutConfirmModal";
+import NotificationBell from "../notifications/NotificationBell";
+import useBreakpoint from "../../hooks/useBreakpoint";
+
+function formatRoleLabel(role) {
+  if (!role || typeof role !== "string") return "";
+  return role.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+export default function Navbar({ onOpenSidebar, onToggleSidebar, sidebarCollapsed = false }) {
+  const { t, i18n } = useTranslation();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
+  const { isMobile } = useBreakpoint();
+  const [showProfile, setShowProfile] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [logoutOpen, setLogoutOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const profileRef = useRef(null);
+
+  const pageTitle = getPageTitle(location.pathname, user);
+  const breadcrumbItems = getVisibleBreadcrumbItems(location.pathname, pageTitle);
+  const showBreadcrumbRow = shouldShowNavbarBreadcrumb(location.pathname, pageTitle);
+  const displayName = user?.full_name || user?.name || "User";
+  const displayRole = formatRoleLabel(user?.role_name || user?.role || "");
+
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
+
+  useEffect(() => {
+    if (!showProfile || logoutOpen) return undefined;
+    const onPointerDown = (e) => {
+      if (e.target?.closest?.("[data-logout-modal]")) return;
+      if (profileRef.current && !profileRef.current.contains(e.target)) {
+        setShowProfile(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [showProfile, logoutOpen]);
+
+  useEffect(() => {
+    setShowProfile(false);
+    setSearchOpen(false);
+  }, [location.pathname]);
+
+  const toggleFullscreen = async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch {
+      // Browser may block fullscreen without a direct user gesture.
+    }
+  };
+
+  const openLogout = () => {
+    setShowProfile(false);
+    setLogoutOpen(true);
+  };
+
+  const handleConfirmLogout = async ({ allDevices }) => {
+    setLoggingOut(true);
+    try {
+      await logout({ allDevices });
+      navigate("/login", { replace: true });
+    } finally {
+      setLoggingOut(false);
+      setLogoutOpen(false);
+    }
+  };
+
+  const fullscreenLabel = isFullscreen
+    ? t("common.exitFullscreen", { defaultValue: "Exit fullscreen" })
+    : t("common.fullscreen", { defaultValue: "Enter fullscreen" });
+  const menuLabel = sidebarCollapsed
+    ? t("common.expandNavigation", { defaultValue: "Expand navigation menu" })
+    : t("common.openMenu", { defaultValue: "Open navigation menu" });
+
+  const handleMenuClick = () => {
+    if (typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches) {
+      onToggleSidebar?.();
+      return;
+    }
+    onOpenSidebar?.();
+  };
+
+  return (
+    <header className="app-navbar block w-full shrink-0 print:hidden">
+      <div className="app-navbar__row">
+        {/* Left: page title */}
+        <div className="app-navbar__left">
+          <div className="app-navbar__mobile-logo" aria-hidden="true">
+            <BrandLogo size="sm" />
+          </div>
+          {typeof onOpenSidebar === "function" || typeof onToggleSidebar === "function" ? (
+            <button
+              type="button"
+              onClick={handleMenuClick}
+              className="app-navbar__icon-btn app-navbar__menu-btn"
+              aria-label={menuLabel}
+              title={menuLabel}
+              aria-expanded={!sidebarCollapsed}
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+          ) : null}
+          <div
+            className={`app-navbar__title-block min-w-0 flex-1${
+              showBreadcrumbRow ? "" : " app-navbar__title-block--title-only"
+            }`}
+          >
+            <AppPageTitle title={pageTitle} />
+            {showBreadcrumbRow ? (
+              <div className="mt-2 hidden lg:block">
+                <Breadcrumbs compact items={breadcrumbItems} />
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Center: global search (only shown when search icon is clicked) */}
+        <div className="app-navbar__center">
+          {!isMobile && searchOpen ? (
+            <GlobalSearch
+              onSelect={() => setSearchOpen(false)}
+              onClose={() => setSearchOpen(false)}
+              autoFocus
+            />
+          ) : null}
+        </div>
+
+        {/* Right: search toggle, notifications, fullscreen, profile */}
+        <div className="app-navbar__actions">
+          <button
+            type="button"
+            onClick={() => setSearchOpen((prev) => !prev)}
+            className="app-navbar__icon-btn"
+            title={searchOpen ? "Close search" : "Search"}
+            aria-label={searchOpen ? "Close search" : "Search"}
+            aria-expanded={searchOpen}
+          >
+            {searchOpen ? <X className="h-4 w-4" /> : <Search className="h-4 w-4" />}
+          </button>
+
+          <NotificationBell />
+
+          <select
+            className="app-navbar__language"
+            aria-label={t("common.language")}
+            value={(i18n.resolvedLanguage || i18n.language || "en").split("-")[0]}
+            onChange={(event) => i18n.changeLanguage(event.target.value)}
+          >
+            <option value="en">{t("languageNames.english")}</option>
+            <option value="te">{t("languageNames.telugu")}</option>
+            <option value="hi">{t("languageNames.hindi")}</option>
+            <option value="ta">{t("languageNames.tamil")}</option>
+          </select>
+
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            className="app-navbar__icon-btn app-navbar__fullscreen"
+            title={fullscreenLabel}
+            aria-label={fullscreenLabel}
+            aria-pressed={isFullscreen}
+          >
+            {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+          </button>
+
+          <div className="relative" ref={profileRef}>
+            <button
+              type="button"
+              onClick={() => setShowProfile(!showProfile)}
+              className="app-navbar__user-btn"
+              aria-expanded={showProfile}
+              aria-haspopup="menu"
+              aria-label={`Account menu for ${displayName}`}
+            >
+              <div className="app-navbar__avatar">
+                {user?.avatar ? (
+                  <img
+                    src={user.avatar}
+                    alt=""
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  String(displayName)[0].toUpperCase()
+                )}
+              </div>
+              <div className="app-navbar__profile-text hidden min-w-0 text-left lg:block">
+                <p className="app-navbar__profile-name text-sm font-semibold leading-tight text-[var(--color-text)]">
+                  {displayName}
+                </p>
+                {displayRole ? (
+                  <p className="app-navbar__profile-role text-[11px] leading-tight text-white/95">
+                    {displayRole}
+                  </p>
+                ) : null}
+              </div>
+              <ChevronDown
+                className="hidden h-4 w-4 shrink-0 text-[var(--color-text-icon)] md:block"
+                aria-hidden
+              />
+            </button>
+            {showProfile ? (
+              <ClientProfilePanel
+                key="profile-menu"
+                onClose={() => setShowProfile(false)}
+                onRequestLogout={openLogout}
+              />
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      {/* Mobile expandable search */}
+      {isMobile && searchOpen ? (
+        <div className="app-navbar__mobile-search md:hidden">
+          <GlobalSearch
+            onSelect={() => setSearchOpen(false)}
+            onClose={() => setSearchOpen(false)}
+            autoFocus
+          />
+        </div>
+      ) : null}
+      {/* Mobile single-line breadcrumb strip — hidden on role dashboard homes */}
+      {showBreadcrumbRow ? (
+        <div className="overflow-x-auto whitespace-nowrap scrollbar-none px-3.5 py-1 bg-black/10 border-t border-white/10 lg:hidden text-xs">
+          <Breadcrumbs compact items={breadcrumbItems} />
+        </div>
+      ) : null}
+
+      <LogoutConfirmModal
+        open={logoutOpen}
+        busy={loggingOut}
+        onCancel={() => {
+          if (!loggingOut) setLogoutOpen(false);
+        }}
+        onConfirm={handleConfirmLogout}
+      />
+    </header>
+  );
+}
