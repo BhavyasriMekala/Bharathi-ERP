@@ -5,8 +5,9 @@ import {
   resetPassword,
   validateResetToken,
 } from "../../api/authApi";
+import AuthBrand from "../../components/auth/AuthBrand";
+import LoginBackdrop from "../../components/auth/LoginBackdrop";
 import PasswordInput from "../../components/auth/PasswordInput";
-import BrandLogo from "../../components/common/BrandLogo";
 import Button from "../../components/common/Button";
 import { useToast } from "../../context/ToastContext";
 import { passwordRuleStatus, validatePasswordStrength } from "../../utils/passwordValidation";
@@ -124,49 +125,54 @@ export default function ResetPassword() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-100 via-teal-50 to-slate-100 p-4">
-      <div className="w-full max-w-md rounded-2xl border border-slate-200/80 bg-white p-8 shadow-xl">
-        <div className="mb-6 text-center">
-          <div className="mb-3 flex justify-center">
-            <BrandLogo size="lg" />
-          </div>
-          <h1 className="text-2xl font-bold text-gray-900">Reset Password</h1>
-          <p className="mt-2 text-sm text-gray-600">
-            Choose a strong new password for your account.
-          </p>
-        </div>
+    <div
+      className="relative flex min-h-screen min-h-[100dvh] items-center justify-center overflow-x-hidden overflow-y-auto p-4 sm:p-6 text-gray-900"
+      style={{ colorScheme: "light" }}
+    >
+      <LoginBackdrop />
+      <div className="relative z-10 w-full max-w-md md:max-w-3xl my-auto">
+        <div className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-white shadow-xl sm:shadow-2xl">
+          <div className="flex w-full flex-col items-center justify-center bg-white px-5 py-7 sm:px-8 sm:py-9 lg:px-10">
+            <AuthBrand srTitle="Bharathi Enterprises ERP — Reset password" />
 
-        {validating && (
-          <div className="mb-4 flex items-center justify-center gap-2 text-sm text-gray-600">
-            <Spinner />
-            Validating reset link…
-          </div>
-        )}
+            <div className="mb-4 w-full text-center">
+              <h2 className="text-2xl font-bold text-gray-900">Reset Password</h2>
+              <p className="mt-2 text-sm text-gray-600">
+                Choose a strong new password for your account.
+              </p>
+            </div>
 
-        {!validating && tokenError && (
-          <div
-            role="alert"
-            className="mb-4 whitespace-pre-line rounded-lg border border-red-400 bg-red-50 p-3 text-sm text-red-700"
-          >
-            {tokenError}{" "}
-            <Link to="/forgot-password" className="font-semibold underline">
-              Request a new password reset
-            </Link>
-          </div>
-        )}
+            {validating && (
+              <div className="mb-4 flex w-full items-center justify-center gap-2 text-sm text-gray-600">
+                <Spinner />
+                Validating reset link…
+              </div>
+            )}
 
-        {success && (
-          <div
-            role="alert"
-            className="mb-4 rounded-lg border border-green-400 bg-green-50 p-3 text-sm text-green-800"
-          >
-            Password changed successfully.
-            <br />
-            Redirecting to Login Page…
-          </div>
-        )}
+            {!validating && tokenError && (
+              <div
+                role="alert"
+                className="mb-4 w-full whitespace-pre-line rounded-lg border border-red-400 bg-red-50 p-3 text-sm text-red-700"
+              >
+                {tokenError}{" "}
+                <Link to="/forgot-password" className="font-semibold underline">
+                  Request a new password reset
+                </Link>
+              </div>
+            )}
 
-        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+            {success && (
+              <div
+                role="alert"
+                className="mb-4 w-full rounded-lg border border-green-400 bg-green-50 p-3 text-sm text-green-800"
+              >
+                Password changed successfully.
+                <br />
+                Redirecting to Login Page…
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit} className="w-full space-y-4" noValidate>
           {formError && (
             <div
               role="alert"
@@ -224,13 +230,15 @@ export default function ResetPassword() {
           >
             {loading ? "Resetting…" : "Reset Password"}
           </Button>
-        </form>
+            </form>
 
-        <p className="mt-6 text-center text-sm text-gray-600">
-          <Link to="/login" className="font-semibold text-teal-600 hover:text-[var(--color-success)]">
-            Back to Sign In
-          </Link>
-        </p>
+            <p className="mt-6 w-full text-center text-sm text-gray-600">
+              <Link to="/login" className="font-semibold text-teal-600 hover:text-[var(--color-success)]">
+                Back to Sign In
+              </Link>
+            </p>
+          </div>
+        </div>
       </div>
     </div>
   );

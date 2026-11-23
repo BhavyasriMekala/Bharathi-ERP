@@ -4,9 +4,9 @@ import { login as loginApi, getLoginErrorMessage } from "../../api/authApi";
 import { triggerServerWakeup } from "../../utils/serverWakeup";
 import useAuth from "../../hooks/useAuth";
 import AuthSlider from "../../components/auth/AuthSlider";
+import AuthBrand from "../../components/auth/AuthBrand";
 import LoginBackdrop from "../../components/auth/LoginBackdrop";
 import PasswordInput from "../../components/auth/PasswordInput";
-import bharathiLogo from "../../assets/bharathi-logo.png";
 import Button from "../../components/common/Button";
 import LoginSuccessOverlay from "../../components/common/LoginSuccessOverlay";
 import { ROLES } from "../../config/permissions";
@@ -192,20 +192,7 @@ export default function Login() {
         <div className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-white shadow-xl sm:shadow-2xl">
           <div className="flex min-h-0 md:min-h-[420px] flex-col md:flex-row">
             <div className="flex w-full flex-col items-center justify-center bg-white px-5 py-7 sm:px-8 sm:py-9 md:w-1/2 lg:px-10">
-              <div className="w-full text-center">
-                <h1 className="sr-only">Bharathi Enterprises ERP — Sign in</h1>
-                <img
-                  src={bharathiLogo}
-                  alt="Bharathi Enterprises"
-                  width={640}
-                  height={235}
-                  className="mx-auto mb-6 h-14 w-auto max-w-full object-contain sm:h-16 md:h-20"
-                  decoding="async"
-                />
-                <p className="text-xs sm:text-sm text-gray-600">
-                  Electrical line materials, supply, and enterprise operations
-                </p>
-              </div>
+              <AuthBrand srTitle="Bharathi Enterprises ERP — Sign in" />
 
               {error && (
                 <div

@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { forgotPassword, getApiErrorMessage } from "../../api/authApi";
+import AuthBrand from "../../components/auth/AuthBrand";
 import LoginBackdrop from "../../components/auth/LoginBackdrop";
-import BrandLogo from "../../components/common/BrandLogo";
 import Button from "../../components/common/Button";
 import { useToast } from "../../context/ToastContext";
 
@@ -82,77 +82,83 @@ export default function ForgotPassword() {
   };
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden p-4">
+    <div
+      className="relative flex min-h-screen min-h-[100dvh] items-center justify-center overflow-x-hidden overflow-y-auto p-4 sm:p-6 text-gray-900"
+      style={{ colorScheme: "light" }}
+    >
       <LoginBackdrop />
-      <div className="relative z-10 w-full max-w-md rounded-2xl border border-slate-200/80 bg-white p-8 shadow-xl dark:border-slate-700 dark:bg-slate-900">
-        <div className="mb-6 text-center">
-          <div className="mb-3 flex justify-center">
-            <BrandLogo size="lg" />
-          </div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-slate-100">Forgot Password</h1>
-          <p className="mt-2 text-sm text-gray-600 dark:text-slate-400">
-            Enter your company email address and we&apos;ll send a secure reset link.
-          </p>
-        </div>
+      <div className="relative z-10 w-full max-w-md md:max-w-3xl my-auto">
+        <div className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-white shadow-xl sm:shadow-2xl">
+          <div className="flex w-full flex-col items-center justify-center bg-white px-5 py-7 sm:px-8 sm:py-9 lg:px-10">
+            <AuthBrand srTitle="Bharathi Enterprises ERP — Forgot password" />
 
-        {sent && successMessage && (
-          <div
-            role="alert"
-            className="mb-4 whitespace-pre-line rounded-lg border border-green-400 bg-green-50 p-3 text-sm text-green-800"
-          >
-            {successMessage}
-          </div>
-        )}
-
-        {formError && (
-          <div
-            role="alert"
-            className="mb-4 whitespace-pre-line rounded-lg border border-red-400 bg-red-50 p-3 text-sm text-red-700"
-          >
-            {formError}
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-          <div className="relative">
-            <label htmlFor="company-email" className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-slate-300">
-              Company Email Address
-            </label>
-            <div className="pointer-events-none absolute left-4 top-[2.55rem] text-gray-400">
-              <MailIcon />
+            <div className="mb-4 w-full text-center">
+              <h2 className="text-2xl font-bold text-gray-900">Forgot Password</h2>
+              <p className="mt-2 text-sm text-gray-600">
+                Enter your company email address and we&apos;ll send a secure reset link.
+              </p>
             </div>
-            <input
-              id="company-email"
-              type="email"
-              placeholder="you@company.com"
-              value={email}
-              onChange={(e) => {
-                setEmail(e.target.value);
-                if (formError) setFormError("");
-              }}
-              autoComplete="email"
-              disabled={loading || sent}
-              className="box-border h-12 w-full rounded-lg border border-slate-200 bg-gray-50 py-3 pl-12 pr-4 text-sm text-gray-700 placeholder-gray-500 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30 disabled:opacity-60 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
-              required
-            />
+
+            {sent && successMessage && (
+              <div
+                role="alert"
+                className="mb-4 w-full whitespace-pre-line rounded-lg border border-green-400 bg-green-50 p-3 text-sm text-green-800"
+              >
+                {successMessage}
+              </div>
+            )}
+
+            {formError && (
+              <div
+                role="alert"
+                className="mb-4 w-full whitespace-pre-line rounded-lg border border-red-400 bg-red-50 p-3 text-sm text-red-700"
+              >
+                {formError}
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit} className="w-full space-y-4" noValidate>
+              <div className="relative">
+                <label htmlFor="company-email" className="mb-1.5 block text-sm font-medium text-gray-700">
+                  Company Email Address
+                </label>
+                <div className="pointer-events-none absolute left-4 top-[2.55rem] text-gray-400">
+                  <MailIcon />
+                </div>
+                <input
+                  id="company-email"
+                  type="email"
+                  placeholder="you@company.com"
+                  value={email}
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    if (formError) setFormError("");
+                  }}
+                  autoComplete="email"
+                  disabled={loading || sent}
+                  className="box-border h-12 w-full rounded-lg border border-slate-200 bg-gray-50 py-3 pl-12 pr-4 text-sm text-gray-700 placeholder-gray-500 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30 disabled:opacity-60"
+                  required
+                />
+              </div>
+
+              <Button
+                type="submit"
+                variant="primary"
+                fullWidth
+                disabled={loading || sent}
+                loading={loading}
+              >
+                {loading ? "Sending…" : "Send Reset Link"}
+              </Button>
+            </form>
+
+            <p className="mt-6 w-full text-center text-sm text-gray-600">
+              <Link to="/login" className="font-semibold text-teal-600 hover:text-[var(--color-success)]">
+                Back to Sign In
+              </Link>
+            </p>
           </div>
-
-          <Button
-            type="submit"
-            variant="primary"
-            fullWidth
-            disabled={loading || sent}
-            loading={loading}
-          >
-            {loading ? "Sending…" : "Send Reset Link"}
-          </Button>
-        </form>
-
-        <p className="mt-6 text-center text-sm text-gray-600 dark:text-slate-400">
-          <Link to="/login" className="font-semibold text-teal-600 hover:text-[var(--color-success)]">
-            Back to Sign In
-          </Link>
-        </p>
+        </div>
       </div>
     </div>
   );
