@@ -6,7 +6,7 @@ import useAuth from "../../hooks/useAuth";
 import AuthSlider from "../../components/auth/AuthSlider";
 import LoginBackdrop from "../../components/auth/LoginBackdrop";
 import PasswordInput from "../../components/auth/PasswordInput";
-import BrandLogo from "../../components/common/BrandLogo";
+import bharathiLogo from "../../assets/bharathi-logo.png";
 import Button from "../../components/common/Button";
 import LoginSuccessOverlay from "../../components/common/LoginSuccessOverlay";
 import { ROLES } from "../../config/permissions";
@@ -68,6 +68,8 @@ export default function Login() {
   const submittingRef = useRef(false);
 
   useEffect(() => {
+    const prevTitle = document.title;
+    document.title = "Bharathi Enterprises ERP";
     document.documentElement.dataset.theme = "light";
     document.documentElement.classList.remove("dark");
     // Drop stale "Session expired" UI / tab flags so a fresh sign-in is not blocked.
@@ -81,6 +83,7 @@ export default function Login() {
     // Immediately warm up server when user opens the login screen
     triggerServerWakeup();
     return () => {
+      document.title = prevTitle;
       if (redirectTimerRef.current) clearTimeout(redirectTimerRef.current);
       if (lockoutTimerRef.current) clearInterval(lockoutTimerRef.current);
     };
@@ -189,12 +192,19 @@ export default function Login() {
         <div className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-white shadow-xl sm:shadow-2xl">
           <div className="flex min-h-0 md:min-h-[420px] flex-col md:flex-row">
             <div className="flex w-full flex-col items-center justify-center bg-white px-5 py-7 sm:px-8 sm:py-9 md:w-1/2 lg:px-10">
-              <div className="mb-5 w-full text-center">
-                <div className="mb-3 flex justify-center">
-                  <BrandLogo size="xl" imageClassName="h-14 sm:h-[4.5rem]" />
-                </div>
-                <h1 className="mb-1 text-2xl sm:text-3xl font-bold text-gray-900 tracking-tight">Insights Iva</h1>
-                <p className="text-xs sm:text-sm text-gray-600">Business Intelligence • Analytics • AI</p>
+              <div className="w-full text-center">
+                <h1 className="sr-only">Bharathi Enterprises ERP — Sign in</h1>
+                <img
+                  src={bharathiLogo}
+                  alt="Bharathi Enterprises"
+                  width={640}
+                  height={235}
+                  className="mx-auto mb-6 h-14 w-auto max-w-full object-contain sm:h-16 md:h-20"
+                  decoding="async"
+                />
+                <p className="text-xs sm:text-sm text-gray-600">
+                  Electrical line materials, supply, and enterprise operations
+                </p>
               </div>
 
               {error && (
