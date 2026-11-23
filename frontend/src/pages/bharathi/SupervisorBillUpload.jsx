@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 
 import { createBharathiBill, listBharathiBills, submitBharathiBill } from "../../api/bharathiApi";
 import StandardPageLayout from "../../components/common/StandardPageLayout";
+import { uploadFileThroughPipeline } from "../../utils/fileUploadPipeline";
 
 export default function SupervisorBillUpload() {
   const [rows, setRows] = useState([]);
@@ -9,6 +10,7 @@ export default function SupervisorBillUpload() {
   const [remarks, setRemarks] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [progress, setProgress] = useState(0);
   const fileRef = useRef(null);
 
   async function refresh() {
@@ -19,13 +21,27 @@ export default function SupervisorBillUpload() {
   async function onSubmit() {
     setBusy(true);
     setMessage("");
+    setProgress(0);
     try {
-      const files = Array.from(fileRef.current?.files || []).map((f) => ({
-        original_filename: f.name,
-        mime_type: f.type || "application/octet-stream",
-        file_size_bytes: f.size,
-      }));
-      const createRes = await createBharathiBill({ vendor_hint: vendorHint, remarks, files });
+      const files = Array.from(fileRef.current?.files || []);
+      if (!files.length) {
+        setMessage("Select at least one image or PDF.");
+        return;
+      }
+      const stored = [];
+      for (const file of files) {
+        const id = await uploadFileThroughPipeline(file, {
+          entityType: "bharathi_bill",
+          onProgress: setProgress,
+        });
+        stored.push({
+          stored_file_id: id,
+          original_filename: file.name,
+          mime_type: file.type || "application/octet-stream",
+          file_size_bytes: file.size,
+        });
+      }
+      const createRes = await createBharathiBill({ vendor_hint: vendorHint, remarks, files: stored });
       const id = createRes.data?.id;
       if (id) await submitBharathiBill(id);
       setMessage("Bill submitted for OCR and verification.");
@@ -34,9 +50,10 @@ export default function SupervisorBillUpload() {
       if (fileRef.current) fileRef.current.value = "";
       await refresh();
     } catch (e) {
-      setMessage(e?.response?.data?.detail || "Upload failed.");
+      setMessage(e?.response?.data?.detail || e?.message || "Upload failed.");
     } finally {
       setBusy(false);
+      setProgress(0);
     }
   }
 
@@ -48,12 +65,8 @@ export default function SupervisorBillUpload() {
         <label className="text-sm font-medium">Remarks</label>
         <textarea className="rounded border px-3 py-2" rows={2} value={remarks} onChange={(e) => setRemarks(e.target.value)} />
         <input ref={fileRef} type="file" accept="image/*,application/pdf" capture="environment" multiple className="text-sm" />
-        <button
-          type="button"
-          disabled={busy}
-          className="rounded bg-indigo-600 px-4 py-3 text-white disabled:opacity-50"
-          onClick={() => refresh()}
-        >
+        {progress > 0 && progress < 100 ? <p className="text-xs text-slate-500">Uploading… {progress}%</p> : null}
+        <button type="button" disabled={busy} className="rounded border px-4 py-2" onClick={() => refresh()}>
           Refresh list
         </button>
         <button

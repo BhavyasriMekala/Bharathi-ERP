@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 
 class BillFileIn(BaseModel):
-    stored_file_id: int | None = None
+    stored_file_id: int
     original_filename: str
     mime_type: str
     file_size_bytes: int = 0

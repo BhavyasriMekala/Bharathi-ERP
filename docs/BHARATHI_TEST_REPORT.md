@@ -1,20 +1,24 @@
 # Bharathi Test Report
 
-## Executed (local)
-| Suite | Result |
-|-------|--------|
-| `test_bharathi_bills.py` | PASS (unit) |
-| `test_bharathi_tally_mock.py` | PASS (after SessionLocal fix) |
-| `test_production_host_config.py` | PASS |
-| `test_cors_preflight.py` | PASS |
-| `frontend npm run build` | PASS |
+## 2026-11-23 local recovery
 
-## Not run (infrastructure)
-| Suite | Reason |
-|-------|--------|
-| Full backend pytest | Time / DB — run in CI with Postgres |
-| Alembic on Docker `bharathi_erp` | Docker not started in agent session |
-| Playwright E2E | NOT STARTED |
-| Live Tally / OpenAI vision | BLOCKED EXTERNAL |
+| Suite | Result | Notes |
+|-------|--------|-------|
+| `test_bharathi_bill_workflow.py` | PASS | Supervisor upload → submit → Accountant verify; Supervisor denied verify |
+| `test_bharathi_bills.py` | PASS | |
+| `test_bharathi_tally_mock.py` | PASS | |
+| `GET /health` | PASS | SQLite dev session |
+| `GET /health/db` | PARTIAL | Depends on DB connectivity/migrations |
+| `npm run build` | PASS | |
+| Full pytest suite | NOT RUN | |
+| Alembic on Bharathi PG | NOT RUN | Docker unavailable |
 
-See `docs/BHARATHI_IMPLEMENTATION_STATUS.md` for feature-level completeness.
+## How to re-run
+
+```powershell
+cd backend
+$env:ALLOW_SQLITE_RUNTIME="1"
+$env:DATABASE_URL="sqlite:///./bharathi_local_dev.db"
+$env:JWT_SECRET_KEY="local-dev-bharathi-only-not-for-production-32chars"
+python -m pytest tests/test_bharathi_bill_workflow.py tests/test_bharathi_bills.py tests/test_bharathi_tally_mock.py -q
+```

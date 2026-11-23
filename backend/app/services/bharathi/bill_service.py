@@ -18,6 +18,7 @@ from app.models.bharathi import (
     BharathiBillSubmission,
     BharathiBillVerificationEvent,
 )
+from app.models.file_storage import StoredFile
 from app.models.user import User
 from app.services.audit_log_service import AuditLogService
 from app.services.bharathi.ocr_providers import dumps_json, get_ocr_provider
@@ -48,6 +49,20 @@ def supervisor_scope_user_id(user: User) -> int | None:
     if "Supervisor" in _roles(user):
         return user.id
     raise HTTPException(403, "Not authorized for bill submissions")
+
+
+def _validate_stored_file(db: Session, user: User, stored_file_id: int | None) -> StoredFile:
+    if not stored_file_id:
+        raise HTTPException(400, "stored_file_id is required for each bill attachment")
+    row = db.get(StoredFile, stored_file_id)
+    if not row or row.tenant_id != user.tenant_id:
+        raise HTTPException(404, "Stored file not found")
+    if row.upload_status != "UPLOADED":
+        raise HTTPException(400, "File upload is not complete")
+    owner_only = supervisor_scope_user_id(user)
+    if owner_only and row.uploaded_by_user_id not in (None, owner_only):
+        raise HTTPException(403, "Cannot attach another user's file")
+    return row
 
 
 def _duplicate_check(db: Session, tenant_id: int, sha: str | None) -> int | None:
@@ -89,11 +104,15 @@ def create_submission(db: Session, user: User, payload: dict) -> BharathiBillSub
     db.add(sub)
     db.flush()
 
+    files = payload.get("files") or []
+    if not files:
+        raise HTTPException(400, "At least one file attachment is required")
     dup_id = None
-    for f in payload.get("files") or []:
-        sha = (f.get("content_sha256") or "").strip() or None
-        if not sha and f.get("original_filename"):
-            sha = hashlib.sha256(f["original_filename"].encode()).hexdigest()
+    for f in files:
+        stored = _validate_stored_file(db, user, f.get("stored_file_id"))
+        sha = (stored.checksum_sha256 or f.get("content_sha256") or "").strip() or None
+        if not sha and stored.original_filename:
+            sha = hashlib.sha256(stored.original_filename.encode()).hexdigest()
         found = _duplicate_check(db, tenant_id, sha)
         if found and found != sub.id:
             dup_id = found
@@ -101,10 +120,10 @@ def create_submission(db: Session, user: User, payload: dict) -> BharathiBillSub
             BharathiBillFile(
                 tenant_id=tenant_id,
                 submission_id=sub.id,
-                stored_file_id=f.get("stored_file_id"),
-                original_filename=f["original_filename"],
-                mime_type=f["mime_type"],
-                file_size_bytes=int(f.get("file_size_bytes") or 0),
+                stored_file_id=stored.id,
+                original_filename=stored.original_filename,
+                mime_type=stored.mime_type or f.get("mime_type") or "application/octet-stream",
+                file_size_bytes=int(stored.file_size or f.get("file_size_bytes") or 0),
                 content_sha256=sha,
             )
         )

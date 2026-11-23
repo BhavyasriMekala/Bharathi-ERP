@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.auth_deps import get_current_user
 from app.api.deps import get_db
-from app.core.permissions import require_permission, tenant_scope
+from app.core.permissions import get_role_names, require_permission, tenant_scope, user_is_admin
 from app.models.user import User
 from app.schemas.bharathi import (
     BillSubmissionCreate,
@@ -17,12 +17,14 @@ from app.schemas.bharathi import (
 )
 from app.models.bharathi import BharathiCollectionFollowUp
 from app.services.bharathi.bill_service import (
+    _get_submission,
     create_submission,
     list_submissions,
     submission_to_dict,
     submit_for_processing,
     verify_submission,
 )
+from app.services.file_management_service import get_download_url
 from app.services.bharathi.collections_service import list_followups
 from app.services.bharathi.dashboard_service import role_dashboard
 from app.services.bharathi.tally_connector import run_inbound_sync, run_outbound_sync
@@ -51,6 +53,26 @@ def bharathi_dashboard(
     db: Session = Depends(get_db),
 ):
     return role_dashboard(db, user)
+
+
+@router.get("/bills/{submission_id}")
+def get_bill(
+    submission_id: int,
+    user: User = Depends(require_permission(BILLS_MODULE)),
+    db: Session = Depends(get_db),
+):
+    allow_all = user_is_admin(user) or "Accountant" in get_role_names(user)
+    sub = _get_submission(db, user, submission_id, allow_all=allow_all)
+    data = submission_to_dict(db, sub)
+    for f in data.get("files") or []:
+        fid = f.get("stored_file_id")
+        if fid:
+            try:
+                url = get_download_url(db, user, int(fid))
+                f["download_url"] = url.get("url") if isinstance(url, dict) else url
+            except Exception:
+                f["download_url"] = None
+    return data
 
 
 @router.get("/bills")

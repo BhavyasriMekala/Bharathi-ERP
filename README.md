@@ -255,8 +255,8 @@ cp .env.example .env
 # Set DATABASE_URL to PostgreSQL (see .env.example)
 alembic upgrade heads
 alembic current
-
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
 ```
 
 **Outbound email (optional in dev, required for password reset and Email PDF):** copy SMTP settings from `backend/.env.example` into `backend/.env` (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`). `SMTP_FROM_EMAIL` must use a **verified sending domain**. Use port **587** with STARTTLS or **465** with SSL. Verify without sending mail: `python scripts/check_smtp.py` from `backend/`. Restart uvicorn after changing `.env`.

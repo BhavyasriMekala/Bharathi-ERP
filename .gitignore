@@ -30,6 +30,8 @@ dist/
 frontend/.firebase/
 .vite/
 *.local
+frontend/vite.config.js.timestamp-*.mjs
+vite.config.js.timestamp-*.mjs
 
 # ---- Environment / secrets ----
 .env
